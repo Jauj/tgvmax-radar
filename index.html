@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TGVmax Radar — places TGVmax dispo, gratuit et sans compte</title>
-  <meta name="description" content="Trouve les places TGVmax ouvertes à la réservation : depuis une gare, vers une destination, ou en découpage avec correspondance. 100 % gratuit, sans compte, données open data SNCF.">
+  <title>TGVmax Radar — places Max Jeunes (ex-TGVmax) dispo, gratuit et sans compte</title>
+  <meta name="description" content="Trouve les places de l'abonnement Max Jeunes (ex-TGVmax) ouvertes à la réservation : TGV INOUI, OUIGO, Intercités de jour et de nuit. Depuis une gare, vers une destination, ou en itinéraire à correspondances. 100 % gratuit, sans compte, données open data SNCF.">
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚄</text></svg>">
@@ -12,8 +12,8 @@
 <body>
   <header class="hero">
     <h1>🚄 TGVmax Radar</h1>
-    <p>Toutes les places <strong>TGVmax</strong> ouvertes à la réservation — gratuit, sans compte, sans limite.<br>
-    <small>Données open data SNCF, mises à jour chaque nuit. Réservation sur SNCF Connect.</small></p>
+    <p>Toutes les places de l'abonnement <strong>Max Jeunes</strong> <small>(ex-TGVmax, 16-27 ans)</small> ouvertes à la réservation — <strong>TGV INOUI, OUIGO, Intercités de jour et de nuit</strong>.<br>
+    <small>Gratuit, sans compte, sans limite · Données open data SNCF, mises à jour chaque nuit · Réservation sur SNCF Connect.</small></p>
   </header>
 
   <nav class="tabs" role="tablist">
@@ -21,6 +21,20 @@
     <button class="tab" data-tab="reverse" role="tab">🔄 Vers une destination</button>
     <button class="tab" data-tab="split" role="tab">✂️ Découpage de trajet</button>
   </nav>
+
+  <div class="filterbar">
+    <label for="axe-filter">🚆 Type de train</label>
+    <select id="axe-filter">
+      <option value="">Tous les trains de l'offre</option>
+      <option value="TGV INOUI">TGV INOUI</option>
+      <option value="TGV international">TGV international (Lyria, Italie, Allemagne…)</option>
+      <option value="OUIGO">OUIGO</option>
+      <option value="Intercités de jour">Intercités de jour</option>
+      <option value="Intercités de nuit">Intercités de nuit</option>
+      <option value="Autocar SNCF">Autocar SNCF</option>
+    </select>
+    <span class="hint">💡 Clique sur un train pour voir son numéro.</span>
+  </div>
 
   <main>
     <section id="tab-classic" class="tab-panel active">
@@ -85,7 +99,7 @@
   </main>
 
   <footer>
-    <p>Outil indépendant, <strong>non affilié à la SNCF</strong>. Disponibilités indicatives (dataset open data « tgvmax », mis à jour chaque nuit) — réserve sur
+    <p>Outil indépendant, <strong>non affilié à la SNCF</strong>. Disponibilités indicatives de l'offre <strong>Max Jeunes</strong> (dataset open data « tgvmax », champ historique <code>od_happy_card</code>, mis à jour chaque nuit) — réserve sur
     <a href="https://www.sncf-connect.com" target="_blank" rel="noopener">SNCF Connect</a>.</p>
     <p class="credits">Données : <a href="https://data.sncf.com" target="_blank" rel="noopener">SNCF Open Data</a> (licence ODbL) · Carte : OpenStreetMap / CARTO · Aucun tracker, aucune limite.</p>
   </footer>
