@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TGVmax Radar — places TGVmax dispo, gratuit et sans compte</title>
+  <meta name="description" content="Trouve les places TGVmax ouvertes à la réservation : depuis une gare, vers une destination, ou en découpage avec correspondance. 100 % gratuit, sans compte, données open data SNCF.">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚄</text></svg>">
+</head>
+<body>
+  <header class="hero">
+    <h1>🚄 TGVmax Radar</h1>
+    <p>Toutes les places <strong>TGVmax</strong> ouvertes à la réservation — gratuit, sans compte, sans limite.<br>
+    <small>Données open data SNCF, mises à jour chaque nuit. Réservation sur SNCF Connect.</small></p>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="classic" role="tab">🎯 Depuis une gare</button>
+    <button class="tab" data-tab="reverse" role="tab">🔄 Vers une destination</button>
+    <button class="tab" data-tab="split" role="tab">✂️ Découpage de trajet</button>
+  </nav>
+
+  <main>
+    <section id="tab-classic" class="tab-panel active">
+      <form class="search-form" data-mode="classic">
+        <label>Gare de départ
+          <input type="text" name="station" list="stations" placeholder="Ex : PARIS (intramuros)" required>
+        </label>
+        <label>Date
+          <input type="date" name="date" required>
+        </label>
+        <button type="submit">Rechercher</button>
+      </form>
+    </section>
+
+    <section id="tab-reverse" class="tab-panel">
+      <form class="search-form" data-mode="reverse">
+        <label>Gare d'arrivée
+          <input type="text" name="station" list="stations" placeholder="Ex : NICE VILLE" required>
+        </label>
+        <label>Date
+          <input type="date" name="date" required>
+        </label>
+        <button type="submit">Rechercher</button>
+      </form>
+    </section>
+
+    <section id="tab-split" class="tab-panel">
+      <form class="search-form" data-mode="split">
+        <label>Départ
+          <input type="text" name="from" list="stations" placeholder="Ex : PARIS (intramuros)" required>
+        </label>
+        <label>Arrivée
+          <input type="text" name="to" list="stations" placeholder="Ex : NICE VILLE" required>
+        </label>
+        <label>Date
+          <input type="date" name="date" required>
+        </label>
+        <button type="submit">Chercher un découpage</button>
+      </form>
+      <p class="hint">✂️ Aucune place directe ? On cherche une gare intermédiaire où deux places TGVmax se chaînent (correspondance ≥ 5 min, même journée).</p>
+    </section>
+
+    <div id="status" class="status" hidden></div>
+    <div id="results"></div>
+    <div id="map" hidden></div>
+  </main>
+
+  <footer>
+    <p>Outil indépendant, <strong>non affilié à la SNCF</strong>. Disponibilités indicatives (dataset open data « tgvmax », mis à jour chaque nuit) — réserve sur
+    <a href="https://www.sncf-connect.com" target="_blank" rel="noopener">SNCF Connect</a>.</p>
+    <p class="credits">Données : <a href="https://data.sncf.com" target="_blank" rel="noopener">SNCF Open Data</a> (licence ODbL) · Carte : OpenStreetMap / CARTO · Aucun tracker, aucune limite.</p>
+  </footer>
+
+  <datalist id="stations"></datalist>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
