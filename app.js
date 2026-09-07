@@ -48,6 +48,27 @@ function fmtDur(min) {
   return h > 0 ? `${h}h${String(m).padStart(2, '0')}` : `${m} min`;
 }
 
+/* ---------------- TYPES DE TRAINS (champ « axe » du dataset) ---------------- */
+const AXE_CATEGORIES = ['TGV INOUI', 'TGV international', 'OUIGO', 'Intercités de jour', 'Intercités de nuit', 'Autocar SNCF'];
+/**
+ * Catégorise une valeur « axe » du dataset tgvmax :
+ *  - axes TGV : ATLANTIQUE, SUD EST, EST, NORD → TGV INOUI
+ *  - INTERNATIONAL → TGV international (Lyria, Italie, Allemagne, Luxembourg…)
+ *  - OUIGO_nord / OUIGO_atlantique / OUIGO_sud-est / OUIGO_est / OUIGO_TC → OUIGO
+ *  - IC ARO / IC SRO → Intercités de jour
+ *  - IC NUIT → Intercités de nuit
+ *  - AUTOCAR SNCF → Autocar SNCF
+ */
+function axeCategory(axe) {
+  const a = String(axe || '').toUpperCase();
+  if (a.startsWith('OUIGO')) return 'OUIGO';
+  if (a === 'IC NUIT') return 'Intercités de nuit';
+  if (a.startsWith('IC')) return 'Intercités de jour';
+  if (a === 'INTERNATIONAL') return 'TGV international';
+  if (a === 'AUTOCAR SNCF') return 'Autocar SNCF';
+  return 'TGV INOUI';
+}
+
 /* ---------------- API SNCF ---------------- */
 const dayCache = new Map();
 async function fetchDay(dateISO) {
@@ -238,7 +259,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     norm, parseHM, arrivalMinutes, todayISO, addDaysISO, fmtDateFR,
     fetchDay, fetchStationNames,
-    searchClassic, searchReverse, searchDirect, searchMultiSplit, fmtDur
+    searchClassic, searchReverse, searchDirect, searchMultiSplit, fmtDur, axeCategory, AXE_CATEGORIES
   };
 }
 
@@ -454,6 +475,22 @@ if (typeof document !== 'undefined') {
   const sncfConnectLink = (from, to, date) =>
     `https://www.sncf-connect.com/train/search?dep=${encodeURIComponent(prettyStation(from).trim())}&arr=${encodeURIComponent(prettyStation(to).trim())}&outboundDate=${date}`;
 
+  /* ---------- État de recherche + filtre type de train ---------- */
+  let axeFilter = '';
+  let lastSearch = null;
+  $('#axe-filter').addEventListener('change', ev => {
+    axeFilter = ev.target.value;
+    if (lastSearch) doSearch(lastSearch.mode, lastSearch.params);
+  });
+
+  /* ---------- Clic sur une ligne de train => n° de train ---------- */
+  $('#results').addEventListener('click', ev => {
+    const row = ev.target.closest('.train-row');
+    if (!row) return;
+    const det = row.querySelector('.train-details');
+    if (det) det.hidden = !det.hidden;
+  });
+
   function setStatus(msg, isError) {
     const el = $('#status');
     el.hidden = !msg;
@@ -463,7 +500,17 @@ if (typeof document !== 'undefined') {
 
   function trainRow(t) {
     const axe = t.axe ? ` <span class="axe">· ${escapeHtml(t.axe)}</span>` : '';
-    return `<div class="train-row">🕐 ${escapeHtml(t.heure_depart || '?')} → ${escapeHtml(t.heure_arrivee || '?')}${axe}</div>`;
+    const det = t.train_no
+      ? `<span class="train-details" hidden>🚆 n° ${escapeHtml(t.train_no)} · ${escapeHtml(t.origine_iata || '?')} → ${escapeHtml(t.destination_iata || '?')}${t.axe ? ' · ' + escapeHtml(t.axe) : ''}</span>`
+      : '';
+    return `<div class="train-row"${t.train_no ? ' title="Cliquer pour voir le n° de train"' : ''}>🕐 ${escapeHtml(t.heure_depart || '?')} → ${escapeHtml(t.heure_arrivee || '?')}${axe}${det}</div>`;
+  }
+  function legRow(t) {
+    const axe = t.axe ? ` <span class="axe">· ${escapeHtml(t.axe)}</span>` : '';
+    const det = t.train_no
+      ? `<span class="train-details" hidden>🚆 n° ${escapeHtml(t.train_no)} · ${escapeHtml(t.origine_iata || '?')} → ${escapeHtml(t.destination_iata || '?')}</span>`
+      : '';
+    return `<div class="train-row"${t.train_no ? ' title="Cliquer pour voir le n° de train"' : ''}>🕐 ${escapeHtml(t.heure_depart)} → ${escapeHtml(t.heure_arrivee)} · ${escapeHtml(prettyStation(t.origine))} → ${escapeHtml(prettyStation(t.destination))}${axe}${det}</div>`;
   }
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g,
@@ -504,10 +551,6 @@ if (typeof document !== 'undefined') {
     return html;
   }
 
-  function legRow(t) {
-    const axe = t.axe ? ` <span class="axe">· ${escapeHtml(t.axe)}</span>` : '';
-    return `<div class="train-row">🕐 ${escapeHtml(t.heure_depart)} → ${escapeHtml(t.heure_arrivee)} · ${escapeHtml(prettyStation(t.origine))} → ${escapeHtml(prettyStation(t.destination))}${axe}</div>`;
-  }
   function renderSplit(group, hops, date) {
     const label = hops === 1 ? '1 correspondance' : `${hops} correspondances`;
     let html = `<h2 class="res-section-title">✂️ Avec ${label} — <strong>${group.length}</strong> option(s)</h2>`;
@@ -565,17 +608,22 @@ if (typeof document !== 'undefined') {
     const date = params.date;
     try {
       setStatus('⏳ Interrogation des données SNCF…');
-      const trains = await fetchDay(date);
+      const allTrains = await fetchDay(date);
       stationList.add(params.from, params.to, params.station);
-      trains.forEach(t => { stationList.add(t.origine); stationList.add(t.destination); });
+      allTrains.forEach(t => { stationList.add(t.origine); stationList.add(t.destination); });
       refreshDatalist();
+
+      const trains = axeFilter ? allTrains.filter(t => axeCategory(t.axe) === axeFilter) : allTrains;
 
       if (!trains.length) {
         document.getElementById('map').hidden = true;
         $('#results').innerHTML = '';
-        setStatus(`Aucune place TGVmax trouvée pour le <strong>${fmtDateFR(date)}</strong>. Soit tout est complet, soit la date est hors fenêtre de réservation (${BOOKING_WINDOW_DAYS} jours).`, true);
+        setStatus(allTrains.length && axeFilter
+          ? `Aucun train « ${escapeHtml(axeFilter)} » réservable le ${fmtDateFR(date)} (il y a ${allTrains.length} places sur d'autres types de trains — change de filtre).`
+          : `Aucune place Max Jeunes trouvée pour le <strong>${fmtDateFR(date)}</strong>. Soit tout est complet, soit la date est hors fenêtre de réservation (${BOOKING_WINDOW_DAYS} jours).`, true);
         return;
       }
+      const filterTag = axeFilter ? ` · filtre : <strong>${escapeHtml(axeFilter)}</strong>` : '';
 
       let html = '';
       const points = [];
@@ -587,7 +635,7 @@ if (typeof document !== 'undefined') {
           setStatus(`Aucune place depuis « ${escapeHtml(params.station)} » le ${fmtDateFR(date)}. Vérifie l'orthographe de la gare (les gares parisiennes = « PARIS (intramuros) »).`, true);
           return;
         }
-        setStatus(`✅ <strong>${trains.length}</strong> trains réservables en France le ${fmtDateFR(date)} — destinations depuis <strong>${escapeHtml(prettyStation(params.station))}</strong> :`);
+        setStatus(`✅ <strong>${trains.length}</strong> trains réservables le ${fmtDateFR(date)} — destinations depuis <strong>${escapeHtml(prettyStation(params.station))}</strong>${filterTag} :`);
         html = renderGroups('🎯 Depuis ' + escapeHtml(prettyStation(params.station)), groups, params.station, date);
         points.push({ coord: getKnownCoord(params.station), label: prettyStation(params.station), info: 'Départ', color: '#2563eb', major: true });
         groups.forEach(g => points.push({ coord: getKnownCoord(g.station), label: prettyStation(g.station), info: `${g.trains.length} train(s) TGVmax` }));
@@ -600,7 +648,7 @@ if (typeof document !== 'undefined') {
           setStatus(`Aucune place vers « ${escapeHtml(params.station)} » le ${fmtDateFR(date)}. Vérifie l'orthographe (ex. « NICE VILLE »).`, true);
           return;
         }
-        setStatus(`✅ <strong>${trains.length}</strong> trains réservables en France le ${fmtDateFR(date)} — origines pour arriver à <strong>${escapeHtml(prettyStation(params.station))}</strong> :`);
+        setStatus(`✅ <strong>${trains.length}</strong> trains réservables le ${fmtDateFR(date)} — origines pour arriver à <strong>${escapeHtml(prettyStation(params.station))}</strong>${filterTag} :`);
         html = renderGroups('🔄 Vers ' + escapeHtml(prettyStation(params.station)), groups, params.station, date);
         points.push({ coord: getKnownCoord(params.station), label: prettyStation(params.station), info: 'Arrivée', color: '#2563eb', major: true });
         groups.forEach(g => points.push({ coord: getKnownCoord(g.station), label: prettyStation(g.station), info: `${g.trains.length} train(s) TGVmax` }));
@@ -622,7 +670,7 @@ if (typeof document !== 'undefined') {
         itins.forEach(it => { const c = it.legs.length - 1; (byHops[c] = byHops[c] || []).push(it); });
         const recap = Object.keys(byHops).sort((a, b) => a - b)
           .map(c => `<strong>${byHops[c].length}</strong> × ${c} corresp.`).join(' · ');
-        setStatus(`✅ ${fmtDateFR(date)} : <strong>${directs.length}</strong> direct(s)${recap ? ' · ' + recap : ''} — meilleurs itinéraires par catégorie :`);
+        setStatus(`✅ ${fmtDateFR(date)} : <strong>${directs.length}</strong> direct(s)${recap ? ' · ' + recap : ''} — meilleurs itinéraires par catégorie${filterTag} :`);
         html = renderDirect('🚄 Directs', directs, params.from, params.to, date);
         for (const c of Object.keys(byHops).sort((a, b) => a - b)) {
           html += renderSplit(byHops[c], Number(c), date);
@@ -670,6 +718,7 @@ if (typeof document !== 'undefined') {
         maxwait: Number(fd.get('maxwait')) || 360
       };
       if ((mode === 'split' && (!params.from || !params.to)) || (mode !== 'split' && !params.station)) return;
+      lastSearch = { mode, params };
       doSearch(mode, params);
     });
   });
