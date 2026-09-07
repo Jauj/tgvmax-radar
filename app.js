@@ -11,6 +11,11 @@ const DATASET = 'tgvmax';
 const BOOKING_WINDOW_DAYS = 31;
 const MIN_CONNECTION_MIN = 5;
 const MAX_CONNECTION_MIN = 360;
+/** Formulaire de recherche SNCF Connect — vérifié empiriquement :
+ *  /train/search répond 404 et /home/shop/results/outward ne porte AUCUN paramètre
+ *  dans l'URL (l'état de recherche vit en mémoire côté SPA) : aucun lien ne peut
+ *  pré-remplir une recherche. On ouvre donc leur vrai formulaire. */
+const SNCF_SEARCH_URL = 'https://www.sncf-connect.com/home/search/od';
 
 /* ---------------- UTILS (purs, testables) ---------------- */
 function norm(s) {
@@ -472,8 +477,7 @@ if (typeof document !== 'undefined') {
   /* ---------- UI ---------- */
   const $ = sel => document.querySelector(sel);
   const prettyStation = s => String(s || '').replace(/\s*\(intramuros\)\s*/i, ' (toutes gares) ');
-  const sncfConnectLink = (from, to, date) =>
-    `https://www.sncf-connect.com/train/search?dep=${encodeURIComponent(prettyStation(from).trim())}&arr=${encodeURIComponent(prettyStation(to).trim())}&outboundDate=${date}`;
+  const sncfConnectLink = (from, to, date) => SNCF_SEARCH_URL;
 
   /* ---------- État de recherche + filtre type de train ---------- */
   let axeFilter = '';
@@ -529,7 +533,7 @@ if (typeof document !== 'undefined') {
           <span class="badge">${g.trains.length} train${g.trains.length > 1 ? 's' : ''}</span>
         </div>
         ${rows}${more}
-        <a class="book-link" target="_blank" rel="noopener" href="${sncfConnectLink(otherStation, g.station, date)}">Vérifier sur SNCF Connect ↗</a>
+        <a class="book-link" target="_blank" rel="noopener" href="${sncfConnectLink(otherStation, g.station, date)}" title="À saisir : ${escapeHtml(prettyStation(otherStation))} → ${escapeHtml(prettyStation(g.station))} · ${fmtDateFR(date)}">Vérifier sur SNCF Connect ↗</a>
       </div>`;
     }
     html += '</div>';
@@ -546,7 +550,7 @@ if (typeof document !== 'undefined') {
       </div>
       ${trains.slice(0, 8).map(trainRow).join('')}
       ${trains.length > 8 ? `<div class="conn">+ ${trains.length - 8} autre(s)</div>` : ''}
-      <a class="book-link" target="_blank" rel="noopener" href="${sncfConnectLink(from, to, date)}">Réserver sur SNCF Connect ↗</a>
+      <a class="book-link" target="_blank" rel="noopener" href="${sncfConnectLink(from, to, date)}" title="À saisir : ${escapeHtml(prettyStation(from))} → ${escapeHtml(prettyStation(to))} · ${fmtDateFR(date)}">Réserver sur SNCF Connect ↗</a>
     </div></div>`;
     return html;
   }
@@ -555,22 +559,24 @@ if (typeof document !== 'undefined') {
     const label = hops === 1 ? '1 correspondance' : `${hops} correspondances`;
     let html = `<h2 class="res-section-title">✂️ Avec ${label} — <strong>${group.length}</strong> option(s)</h2>`;
     if (!group.length) return html;
+    html += `<p class="hint">💡 SNCF Connect ne pré-remplit pas une recherche depuis un lien : chaque bouton ouvre leur formulaire — les gares et la date à saisir sont rappelées au survol.</p>`;
     html += '<div class="cards">';
     for (const it of group.slice(0, 6)) {
       const via = it.hubs.map(prettyStation).join(' · ');
-      const legsHtml = it.legs.map((t, i) =>
-        legRow(t) + (i < it.waits.length
-          ? `<div class="conn">↳ ${fmtDur(it.waits[i])} d'attente à ${escapeHtml(prettyStation(it.hubs[i]))}</div>`
-          : '')
-      ).join('');
-      const bookFrom = it.legs[0].origine, bookTo = it.legs[it.legs.length - 1].destination;
+      const legsHtml = it.legs.map((t, i) => {
+        const bookTitle = `À saisir : ${prettyStation(t.origine)} → ${prettyStation(t.destination)} · ${fmtDateFR(date)}${t.train_no ? ' · train n° ' + t.train_no : ''}${t.axe ? ' · ' + t.axe : ''}`;
+        return legRow(t)
+          + (i < it.waits.length
+            ? `<div class="conn">↳ ${fmtDur(it.waits[i])} d'attente à ${escapeHtml(prettyStation(it.hubs[i]))}</div>`
+            : '')
+          + `<a class="book-link leg-book" target="_blank" rel="noopener" href="${SNCF_SEARCH_URL}" title="${escapeHtml(bookTitle)}">🎫 Réserver ce tronçon — ${escapeHtml(prettyStation(t.origine))} → ${escapeHtml(prettyStation(t.destination))} ↗</a>`;
+      }).join('');
       html += `<div class="card">
         <div class="card-head">
           <span class="card-station">via ${escapeHtml(via)}</span>
           <span class="badge">⏱ ${fmtDur(it.total)}</span>
         </div>
         ${legsHtml}
-        <a class="book-link" target="_blank" rel="noopener" href="${sncfConnectLink(bookFrom, bookTo, date)}">Réserver chaque tronçon sur SNCF Connect ↗</a>
       </div>`;
     }
     html += '</div>';
