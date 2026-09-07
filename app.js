@@ -41,6 +41,12 @@ function arrivalMinutes(depHM, arrHM) {
   if (dep == null || arr == null) return null;
   return arr < dep ? arr + 1440 : arr;
 }
+/** Durée lisible : 95 -> "1h35", 45 -> "45 min" */
+function fmtDur(min) {
+  if (min == null || !isFinite(min)) return '?';
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  return h > 0 ? `${h}h${String(m).padStart(2, '0')}` : `${m} min`;
+}
 
 /* ---------------- API SNCF ---------------- */
 const dayCache = new Map();
@@ -108,45 +114,123 @@ function searchDirect(trains, from, to) {
     .sort((a, b) => String(a.heure_depart || '').localeCompare(String(b.heure_depart || '')));
 }
 /**
- * Découpage à 1 correspondance : A -> hub -> B, même journée,
- * correspondance entre MIN et MAX minutes, hub différent de A et B.
- * Retourne [{hub, wait, t1, t2, totalMin}] trié par départ.
+ * Recherche multi-correspondances A → B, même journée.
+ * opts : { minConn, maxConn, maxHops (1-4), maxResults }
+ * BFS par niveaux : à chaque gare intermédiaire on tente de fermer vers B,
+ * sinon on étend vers un nouveau hub (jamais visité — anti-boucles).
+ * Élagage par gare : arrivées les plus précoces + les plus tardives
+ * (pour couvrir les longues attentes). Caps stricts pour rester rapide.
+ * Retour : [{ legs, waits, hubs, total }] trié par nb de correspondances puis durée.
+ * NB : les directs ne sont PAS inclus (utiliser searchDirect).
  */
-function searchSplit(trains, from, to, minConn = MIN_CONNECTION_MIN, maxConn = MAX_CONNECTION_MIN) {
-  const legs1 = findByOrigin(trains, from);
+function searchMultiSplit(trains, from, to, opts = {}) {
+  const minConn = opts.minConn ?? MIN_CONNECTION_MIN;
+  const maxConn = opts.maxConn ?? MAX_CONNECTION_MIN;
+  const maxHops = Math.max(1, Math.min(4, opts.maxHops ?? 1));
+  const maxResults = opts.maxResults ?? 60;
+  const nFrom = norm(from), nTo = norm(to);
+  if (nFrom === nTo) return [];
+
   const byOrigin = new Map();
   for (const t of trains) {
     const k = norm(t.origine);
     if (!byOrigin.has(k)) byOrigin.set(k, []);
     byOrigin.get(k).push(t);
   }
-  const options = [];
-  for (const t1 of legs1) {
-    const hub = t1.destination;
-    if (!hub || norm(hub) === norm(from) || norm(hub) === norm(to)) continue;
-    const arr1 = arrivalMinutes(t1.heure_depart, t1.heure_arrivee);
-    if (arr1 == null) continue;
-    const dep1 = parseHM(t1.heure_depart);
-    if (dep1 == null) continue;
-    const leg2s = (byOrigin.get(norm(hub)) || [])
-      .filter(t2 => norm(t2.destination) === norm(to))
-      .map(t2 => {
-        const dep2 = parseHM(t2.heure_depart);
-        if (dep2 == null) return null;
-        const wait = dep2 - arr1;
-        if (wait < minConn || wait > maxConn) return null;
-        const arr2 = arrivalMinutes(t2.heure_depart, t2.heure_arrivee);
-        if (arr2 == null) return null;
-        const total = arr2 - dep1; // peut dépasser 24h (nuit) — OK
-        return { hub, wait, t1, t2, total };
-      })
-      .filter(Boolean);
-    options.push(...leg2s);
+  const depM = t => parseHM(t.heure_depart);
+  const arrM = t => arrivalMinutes(t.heure_depart, t.heure_arrivee);
+  const waitOk = (pArr, dep) => pArr == null ? true : (dep - pArr >= minConn && dep - pArr <= maxConn);
+
+  const results = [];
+  const LEVEL_CAP = 300;
+  let partials = [{ legs: [], hub: from, arrival: null, visited: new Set([nFrom]) }];
+
+  for (let level = 0; level <= maxHops; level++) {
+    const next = [];
+    let levelCount = 0;
+    for (const p of partials) {
+      const outs = byOrigin.get(norm(p.hub)) || [];
+      if (level > 0) {
+        // Clôture : p.hub → B
+        for (const t of outs) {
+          if (norm(t.destination) !== nTo) continue;
+          const d = depM(t);
+          if (d == null || !waitOk(p.arrival, d)) continue;
+          results.push({ legs: [...p.legs, t] });
+          levelCount++;
+          if (levelCount >= LEVEL_CAP) break;
+        }
+      }
+      if (level < maxHops) {
+        // Extension vers un nouveau hub (jamais la gare d'arrivée, jamais une gare déjà visitée)
+        for (const t of outs) {
+          const nd = norm(t.destination);
+          if (nd === nTo || nd === norm(p.hub) || p.visited.has(nd)) continue;
+          const d = depM(t), a = arrM(t);
+          if (d == null || a == null || !waitOk(p.arrival, d)) continue;
+          const visited = new Set(p.visited); visited.add(nd);
+          next.push({ legs: [...p.legs, t], hub: t.destination, arrival: a, visited });
+        }
+      }
+    }
+    if (level >= maxHops) break;
+    // Élagage : par hub, garder les arrivées les plus précoces (+ les plus tardives)
+    const byHub = new Map();
+    for (const p of next) {
+      const k = norm(p.hub);
+      if (!byHub.has(k)) byHub.set(k, []);
+      byHub.get(k).push(p);
+    }
+    partials = [];
+    for (const list of byHub.values()) {
+      list.sort((a, b) => a.arrival - b.arrival);
+      const kept = list.slice(0, 25);
+      for (const p of list.slice(-15)) if (!kept.includes(p)) kept.push(p);
+      partials.push(...kept);
+    }
+    if (partials.length > 2500) partials.length = 2500;
   }
-  return options
-    .sort((a, b) => String(a.t1.heure_depart).localeCompare(String(b.t1.heure_depart))
-      || String(a.t2.heure_depart).localeCompare(String(b.t2.heure_depart)))
-    .slice(0, 24);
+
+  // Finalisation : attentes, durée totale, dédoublonnage, tri
+  const seen = new Set();
+  const out = [];
+  for (const r of results) {
+    const firstDep = depM(r.legs[0]);
+    const lastArr = arrM(r.legs[r.legs.length - 1]);
+    if (firstDep == null || lastArr == null) continue;
+    const waits = [];
+    let ok = true;
+    for (let i = 0; i + 1 < r.legs.length; i++) {
+      const w = depM(r.legs[i + 1]) - arrM(r.legs[i]);
+      if (w == null || w < minConn || w > maxConn) { ok = false; break; }
+      waits.push(w);
+    }
+    if (!ok) continue;
+    const sig = r.legs.map(t => `${t.origine}|${t.destination}|${t.heure_depart}|${t.heure_arrivee}`).join('§');
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    out.push({
+      legs: r.legs,
+      waits,
+      hubs: r.legs.slice(0, -1).map(t => t.destination),
+      total: lastArr - firstDep
+    });
+  }
+  // Représentation équilibrée : meilleurs itinéraires PAR nombre de correspondances,
+  // pour que les options à 3-4 corresp. ne soient pas noyées par les 1 corresp.
+  const maxPerLevel = opts.maxPerLevel ?? 12;
+  const byLevel = new Map();
+  for (const it of out) {
+    const c = it.legs.length - 1;
+    if (!byLevel.has(c)) byLevel.set(c, []);
+    byLevel.get(c).push(it);
+  }
+  const final = [];
+  for (const c of [...byLevel.keys()].sort((a, b) => a - b)) {
+    byLevel.get(c).sort((a, b) => a.total - b.total);
+    final.push(...byLevel.get(c).slice(0, maxPerLevel));
+  }
+  return final.slice(0, maxResults);
 }
 
 /* ---------------- EXPORTS (tests Node) ---------------- */
@@ -154,7 +238,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     norm, parseHM, arrivalMinutes, todayISO, addDaysISO, fmtDateFR,
     fetchDay, fetchStationNames,
-    searchClassic, searchReverse, searchDirect, searchSplit
+    searchClassic, searchReverse, searchDirect, searchMultiSplit, fmtDur
   };
 }
 
@@ -420,21 +504,30 @@ if (typeof document !== 'undefined') {
     return html;
   }
 
-  function renderSplit(options, from, to, date) {
-    let html = `<h2 class="res-section-title">✂️ Découpages possibles — <strong>${options.length}</strong> option(s)</h2>`;
-    if (!options.length) return html;
+  function legRow(t) {
+    const axe = t.axe ? ` <span class="axe">· ${escapeHtml(t.axe)}</span>` : '';
+    return `<div class="train-row">🕐 ${escapeHtml(t.heure_depart)} → ${escapeHtml(t.heure_arrivee)} · ${escapeHtml(prettyStation(t.origine))} → ${escapeHtml(prettyStation(t.destination))}${axe}</div>`;
+  }
+  function renderSplit(group, hops, date) {
+    const label = hops === 1 ? '1 correspondance' : `${hops} correspondances`;
+    let html = `<h2 class="res-section-title">✂️ Avec ${label} — <strong>${group.length}</strong> option(s)</h2>`;
+    if (!group.length) return html;
     html += '<div class="cards">';
-    for (const o of options.slice(0, 12)) {
-      const h = Math.floor(o.total / 60), m = o.total % 60;
+    for (const it of group.slice(0, 6)) {
+      const via = it.hubs.map(prettyStation).join(' · ');
+      const legsHtml = it.legs.map((t, i) =>
+        legRow(t) + (i < it.waits.length
+          ? `<div class="conn">↳ ${fmtDur(it.waits[i])} d'attente à ${escapeHtml(prettyStation(it.hubs[i]))}</div>`
+          : '')
+      ).join('');
+      const bookFrom = it.legs[0].origine, bookTo = it.legs[it.legs.length - 1].destination;
       html += `<div class="card">
         <div class="card-head">
-          <span class="card-station">via ${escapeHtml(prettyStation(o.hub))}</span>
-          <span class="badge">corresp. ${o.wait} min</span>
+          <span class="card-station">via ${escapeHtml(via)}</span>
+          <span class="badge">⏱ ${fmtDur(it.total)}</span>
         </div>
-        ${trainRow(o.t1)}
-        <div class="conn">↳ changement à ${escapeHtml(prettyStation(o.hub))} (${o.wait} min d'attente)</div>
-        ${trainRow(o.t2)}
-        <div class="conn">⏱ Total : ${h}h${String(m).padStart(2, '0')}</div>
+        ${legsHtml}
+        <a class="book-link" target="_blank" rel="noopener" href="${sncfConnectLink(bookFrom, bookTo, date)}">Réserver chaque tronçon sur SNCF Connect ↗</a>
       </div>`;
     }
     html += '</div>';
@@ -515,18 +608,31 @@ if (typeof document !== 'undefined') {
 
       if (mode === 'split') {
         const directs = searchDirect(trains, params.from, params.to);
-        const options = searchSplit(trains, params.from, params.to);
-        if (!directs.length && !options.length) {
+        const itins = searchMultiSplit(trains, params.from, params.to, {
+          maxHops: params.hops,
+          maxConn: params.maxwait
+        });
+        if (!directs.length && !itins.length) {
           $('#results').innerHTML = '';
-          setStatus(`Ni direct ni découpage simple trouvé entre « ${escapeHtml(params.from)} » et « ${escapeHtml(params.to)} » le ${fmtDateFR(date)}. Essaie une autre date ou une gare voisine.`, true);
+          document.getElementById('map').hidden = true;
+          setStatus(`Ni direct ni itinéraire à correspondances trouvé entre « ${escapeHtml(params.from)} » et « ${escapeHtml(params.to)} » le ${fmtDateFR(date)}. Essaie plus de correspondances, une attente max plus grande, ou une autre date.`, true);
           return;
         }
-        setStatus(`✅ ${fmtDateFR(date)} : <strong>${directs.length}</strong> direct(s), <strong>${options.length}</strong> découpage(s) à 1 correspondance.`);
+        const byHops = {};
+        itins.forEach(it => { const c = it.legs.length - 1; (byHops[c] = byHops[c] || []).push(it); });
+        const recap = Object.keys(byHops).sort((a, b) => a - b)
+          .map(c => `<strong>${byHops[c].length}</strong> × ${c} corresp.`).join(' · ');
+        setStatus(`✅ ${fmtDateFR(date)} : <strong>${directs.length}</strong> direct(s)${recap ? ' · ' + recap : ''} — meilleurs itinéraires par catégorie :`);
         html = renderDirect('🚄 Directs', directs, params.from, params.to, date);
-        html += renderSplit(options, params.from, params.to, date);
+        for (const c of Object.keys(byHops).sort((a, b) => a - b)) {
+          html += renderSplit(byHops[c], Number(c), date);
+        }
         points.push({ coord: getKnownCoord(params.from), label: prettyStation(params.from), info: 'Départ', color: '#2563eb', major: true });
         points.push({ coord: getKnownCoord(params.to), label: prettyStation(params.to), info: 'Arrivée', color: '#0e9f6e', major: true });
-        options.slice(0, 12).forEach(o => points.push({ coord: getKnownCoord(o.hub), label: 'via ' + prettyStation(o.hub), info: `${o.t1.heure_depart} → ${o.t2.heure_arrivee}`, color: '#a1006b' }));
+        const hubCount = {};
+        itins.slice(0, 15).forEach(it => it.hubs.forEach(hh => { hubCount[hh] = (hubCount[hh] || 0) + 1; }));
+        Object.entries(hubCount).slice(0, 20).forEach(([hh, n]) =>
+          points.push({ coord: getKnownCoord(hh), label: prettyStation(hh), info: `${n} itinéraire(s) via cette gare`, color: '#a1006b' }));
       }
 
       window.__lastPoints = points;   // référence pour le re-tracé après géocodage différé
@@ -559,7 +665,9 @@ if (typeof document !== 'undefined') {
         date: fd.get('date'),
         station: (fd.get('station') || '').trim(),
         from: (fd.get('from') || '').trim(),
-        to: (fd.get('to') || '').trim()
+        to: (fd.get('to') || '').trim(),
+        hops: Math.max(1, Math.min(4, Number(fd.get('hops')) || 1)),
+        maxwait: Number(fd.get('maxwait')) || 360
       };
       if ((mode === 'split' && (!params.from || !params.to)) || (mode !== 'split' && !params.station)) return;
       doSearch(mode, params);
