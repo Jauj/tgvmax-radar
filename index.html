@@ -58,9 +58,25 @@
         <label>Date
           <input type="date" name="date" required>
         </label>
-        <button type="submit">Chercher un découpage</button>
+        <label>Correspondances max
+          <select name="hops">
+            <option value="1">1</option>
+            <option value="2" selected>2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <label>Attente max / étape
+          <select name="maxwait">
+            <option value="120">2 h</option>
+            <option value="240">4 h</option>
+            <option value="360" selected>6 h</option>
+            <option value="480">8 h</option>
+          </select>
+        </label>
+        <button type="submit">Chercher un itinéraire</button>
       </form>
-      <p class="hint">✂️ Aucune place directe ? On cherche une gare intermédiaire où deux places TGVmax se chaînent (correspondance ≥ 5 min, même journée).</p>
+      <p class="hint">✂️ Aucune place directe ? On cherche des itinéraires avec jusqu'à 4 correspondances (attente réglable de 5 min à 8 h), même journée. Les directs sont affichés aussi.</p>
     </section>
 
     <div id="status" class="status" hidden></div>
