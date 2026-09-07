@@ -171,6 +171,33 @@ main { max-width: 980px; margin: 0 auto; padding: 12px 16px 40px; }
   padding-left: 24px;
 }
 .train-details[hidden] { display: none; }
+.book-link.leg-book { font-size: .82rem; margin: 2px 0 8px; }
+
+/* ---------------- MOBILE ---------------- */
+@media (max-width: 640px) {
+  .hero { padding: 16px 12px 4px; }
+  .hero h1 { font-size: 1.3rem; }
+  .hero p { font-size: .92rem; }
+  .tabs { margin: 12px auto 2px; gap: 6px; }
+  .tab { padding: 9px 12px; font-size: .84rem; }
+  main { padding: 8px 10px 32px; }
+  .search-form { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px; }
+  .search-form label { min-width: 0; }
+  .search-form input, .search-form select { width: 100%; }
+  .search-form button { width: 100%; padding: 13px 18px; }
+  .filterbar { gap: 8px; padding: 0 4px; }
+  .filterbar select { flex: 1; min-width: 0; max-width: 100%; }
+  .cards { grid-template-columns: 1fr; gap: 10px; }
+  .card { padding: 10px 12px; }
+  .card-head { flex-wrap: wrap; gap: 4px 8px; }
+  .card-station { font-size: .95rem; }
+  .train-row { padding: 5px 0; }
+  .train-details { padding-left: 4px; }
+  .book-link { display: block; padding: 8px 0; }
+  #map { height: 300px; margin: 12px 0; }
+  .res-section-title { font-size: .96rem; }
+  footer { font-size: .78rem; padding: 14px 12px 24px; }
+}
 
 footer {
   text-align: center;
