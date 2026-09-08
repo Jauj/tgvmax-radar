@@ -40,7 +40,7 @@
     <section id="tab-classic" class="tab-panel active">
       <form class="search-form" data-mode="classic">
         <label>Gare de départ
-          <input type="text" name="station" list="stations" placeholder="Ex : PARIS (intramuros)" required>
+          <div class="ac-wrap"><input type="text" name="station" placeholder="Ex : Paris" autocomplete="off" required></div>
         </label>
         <label>Date
           <input type="date" name="date" required>
@@ -52,7 +52,7 @@
     <section id="tab-reverse" class="tab-panel">
       <form class="search-form" data-mode="reverse">
         <label>Gare d'arrivée
-          <input type="text" name="station" list="stations" placeholder="Ex : NICE VILLE" required>
+          <div class="ac-wrap"><input type="text" name="station" placeholder="Ex : Nice" autocomplete="off" required></div>
         </label>
         <label>Date
           <input type="date" name="date" required>
@@ -64,10 +64,10 @@
     <section id="tab-split" class="tab-panel">
       <form class="search-form" data-mode="split">
         <label>Départ
-          <input type="text" name="from" list="stations" placeholder="Ex : PARIS (intramuros)" required>
+          <div class="ac-wrap"><input type="text" name="from" placeholder="Ex : Paris" autocomplete="off" required></div>
         </label>
         <label>Arrivée
-          <input type="text" name="to" list="stations" placeholder="Ex : NICE VILLE" required>
+          <div class="ac-wrap"><input type="text" name="to" placeholder="Ex : Nice" autocomplete="off" required></div>
         </label>
         <label>Date
           <input type="date" name="date" required>
@@ -103,8 +103,6 @@
     <a href="https://www.sncf-connect.com" target="_blank" rel="noopener">SNCF Connect</a>.</p>
     <p class="credits">Données : <a href="https://data.sncf.com" target="_blank" rel="noopener">SNCF Open Data</a> (licence ODbL) · Carte : OpenStreetMap / CARTO · Aucun tracker, aucune limite.</p>
   </footer>
-
-  <datalist id="stations"></datalist>
 
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script src="app.js"></script>
