@@ -1237,7 +1237,16 @@ if (typeof document !== 'undefined') {
       .select('captured_at, oui_count, itins_count')
       .eq('route_from', from).eq('route_to', to).eq('for_date', forDate)
       .order('captured_at', { ascending: true });
-    if (error) { chart.innerHTML = `<p class="hint">⚠️ ${escapeHtml(error.message)}</p>`; table.innerHTML = ''; return; }
+    if (error) {
+      if (error.code === 'PGRST205') {
+        chart.innerHTML = `<div class="setup-box"><h2>⚠️ Table pas encore créée sur Supabase</h2><p>Un dernier pas : ouvre <strong>Supabase → SQL Editor → New query</strong>, colle le contenu du fichier <code>supabase-setup.sql</code> puis Run. Le SQL est aussi visible <a href="supabase-setup.sql" target="_blank" rel="noopener">ici</a>. Reviens ensuite sur cet onglet !</p></div>`;
+        table.innerHTML = '';
+        return;
+      }
+      chart.innerHTML = `<p class="hint">⚠️ ${escapeHtml(error.message)}</p>`;
+      table.innerHTML = '';
+      return;
+    }
     const rows = data || [];
     const series = rows.map(r => ({
       x: new Date(r.captured_at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
