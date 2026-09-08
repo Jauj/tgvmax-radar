@@ -30,11 +30,16 @@ function parseHM(hm) {
   const [h, m] = hm.split(':').map(Number);
   return h * 60 + m;
 }
-function todayISO() { return new Date().toISOString().slice(0, 10); }
+function todayISO() {
+  // date LOCALE (l’utilisateur raisonne en date locale, même tard le soir)
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 function addDaysISO(iso, n) {
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  // arithmétique 100 % UTC pour éviter tout décalage fuseau (bug Paris +2 corrigé)
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + n));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
 }
 function fmtDateFR(iso) {
   return new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })
@@ -169,27 +174,56 @@ function groupBySorted(trains, keyFn) {
     }))
     .sort((a, b) => b.trains.length - a.trains.length || a.station.localeCompare(b.station, 'fr'));
 }
+/** Filtre une liste de trains sur le créneau demandé : départ ≥ depMin, arrivée ≤ arrMax.
+ *  Les trains de nuit (arrivée le lendemain) sont exclus quand une heure d’arrivée max est fixée. */
+function inWindow(t, depMin, arrMax) {
+  const dep = String(t.heure_depart || '');
+  const arr = String(t.heure_arrivee || '');
+  if (depMin && dep < depMin) return false;
+  if (arrMax) {
+    if (!arr || arr < dep) return false;
+    if (arr > arrMax) return false;
+  }
+  return true;
+}
+/** Prochain samedi (format ISO) — pour le bouton « Week-end » */
+function nextSaturdayISO() {
+  let iso = todayISO();
+  for (let i = 0; i < 8; i++) {
+    if (new Date(iso + 'T00:00:00Z').getUTCDay() === 6) return iso;
+    iso = addDaysISO(iso, 1);
+  }
+  return iso;
+}
 /** Toutes les destinations atteignables depuis une gare/ville (hors trains intra-gare) */
-function searchClassic(trains, from, cityIndex) {
+function searchClassic(trains, from, cityIndex, opts = {}) {
   const fromSet = expandStationLabel(from, cityIndex);
-  return groupBySorted(
-    findByOrigin(trains, fromSet).filter(t => !fromSet.has(norm(t.destination))),
+  const groups = groupBySorted(
+    findByOrigin(trains, fromSet)
+      .filter(t => !fromSet.has(norm(t.destination)) && inWindow(t, opts.depMin, opts.arrMax)),
     t => t.destination
   );
+  if (opts.sortMode === 'heure') groups.sort((a, b) => String(a.trains[0]?.heure_depart || '').localeCompare(String(b.trains[0]?.heure_depart || '')));
+  else if (opts.sortMode === 'az') groups.sort((a, b) => a.station.localeCompare(b.station, 'fr'));
+  return groups;
 }
 /** Toutes les origines qui desservent une gare/ville (hors trains intra-gare) */
-function searchReverse(trains, to, cityIndex) {
+function searchReverse(trains, to, cityIndex, opts = {}) {
   const toSet = expandStationLabel(to, cityIndex);
-  return groupBySorted(
-    findByDest(trains, toSet).filter(t => !toSet.has(norm(t.origine))),
+  const groups = groupBySorted(
+    findByDest(trains, toSet)
+      .filter(t => !toSet.has(norm(t.origine)) && inWindow(t, opts.depMin, opts.arrMax)),
     t => t.origine
   );
+  if (opts.sortMode === 'heure') groups.sort((a, b) => String(a.trains[0]?.heure_depart || '').localeCompare(String(b.trains[0]?.heure_depart || '')));
+  else if (opts.sortMode === 'az') groups.sort((a, b) => a.station.localeCompare(b.station, 'fr'));
+  return groups;
 }
 /** Trains directs entre deux gares/villes */
-function searchDirect(trains, from, to, cityIndex) {
+function searchDirect(trains, from, to, cityIndex, opts = {}) {
   const fromSet = expandStationLabel(from, cityIndex), toSet = expandStationLabel(to, cityIndex);
   return findByOrigin(trains, fromSet)
-    .filter(t => toSet.has(norm(t.destination)) && norm(t.origine) !== norm(t.destination))
+    .filter(t => toSet.has(norm(t.destination)) && norm(t.origine) !== norm(t.destination) && inWindow(t, opts.depMin, opts.arrMax))
     .sort((a, b) => String(a.heure_depart || '').localeCompare(String(b.heure_depart || '')));
 }
 /**
@@ -208,6 +242,7 @@ function searchMultiSplit(trains, from, to, opts = {}) {
   const maxHops = Math.max(1, Math.min(4, opts.maxHops ?? 1));
   const maxResults = opts.maxResults ?? 60;
   const cityIndex = opts.cityIndex || null;
+  const depMin = opts.depMin || '', arrMax = opts.arrMax || '';
   const fromSet = expandStationLabel(from, cityIndex);
   const toSet = expandStationLabel(to, cityIndex);
   if ([...fromSet].some(x => toSet.has(x))) return [];
@@ -232,9 +267,10 @@ function searchMultiSplit(trains, from, to, opts = {}) {
     for (const p of partials) {
       const outs = byOrigin.get(norm(p.hub)) || [];
       if (level > 0) {
-        // Clôture : p.hub → B
+        // Clôture : p.hub → B (arrivée ≤ arrMax si fixé ; trains de nuit exclus alors)
         for (const t of outs) {
           if (!toSet.has(norm(t.destination))) continue;
+          if (arrMax && !inWindow(t, '', arrMax)) continue;
           const d = depM(t);
           if (d == null || !waitOk(p.arrival, d)) continue;
           results.push({ legs: [...p.legs, t] });
@@ -247,6 +283,7 @@ function searchMultiSplit(trains, from, to, opts = {}) {
         for (const t of outs) {
           const nd = norm(t.destination);
           if (toSet.has(nd) || p.visited.has(nd)) continue;
+          if (level === 0 && depMin && String(t.heure_depart || '') < depMin) continue; // le voyage démarre après depMin
           const d = depM(t), a = arrM(t);
           if (d == null || a == null || !waitOk(p.arrival, d)) continue;
           const visited = new Set(p.visited); visited.add(nd);
@@ -320,7 +357,7 @@ if (typeof module !== 'undefined' && module.exports) {
     norm, parseHM, arrivalMinutes, todayISO, addDaysISO, fmtDateFR,
     fetchDay, fetchStationNames,
     searchClassic, searchReverse, searchDirect, searchMultiSplit, fmtDur, axeCategory, AXE_CATEGORIES,
-    buildCityIndex, expandStationLabel
+    buildCityIndex, expandStationLabel, inWindow, nextSaturdayISO
   };
 }
 
@@ -619,17 +656,21 @@ if (typeof document !== 'undefined') {
 
   function trainRow(t) {
     const axe = t.axe ? ` <span class="axe">· ${escapeHtml(t.axe)}</span>` : '';
+    const dur = arrivalMinutes(t.heure_depart, t.heure_arrivee);
+    const durTxt = (dur != null && parseHM(t.heure_depart) != null) ? ` · ${fmtDur(dur - parseHM(t.heure_depart))}` : '';
     const det = t.train_no
       ? `<span class="train-details" hidden>🚆 n° ${escapeHtml(t.train_no)} · ${escapeHtml(t.origine_iata || '?')} → ${escapeHtml(t.destination_iata || '?')}${t.axe ? ' · ' + escapeHtml(t.axe) : ''}</span>`
       : '';
-    return `<div class="train-row"${t.train_no ? ' title="Cliquer pour voir le n° de train"' : ''}>🕐 ${escapeHtml(t.heure_depart || '?')} → ${escapeHtml(t.heure_arrivee || '?')}${axe}${det}</div>`;
+    return `<div class="train-row"${t.train_no ? ' title="Cliquer pour voir le n° de train"' : ''}>🕐 ${escapeHtml(t.heure_depart || '?')} → ${escapeHtml(t.heure_arrivee || '?')}${durTxt}${axe}${det}</div>`;
   }
   function legRow(t) {
     const axe = t.axe ? ` <span class="axe">· ${escapeHtml(t.axe)}</span>` : '';
+    const dur = arrivalMinutes(t.heure_depart, t.heure_arrivee);
+    const durTxt = (dur != null && parseHM(t.heure_depart) != null) ? ` · ${fmtDur(dur - parseHM(t.heure_depart))}` : '';
     const det = t.train_no
       ? `<span class="train-details" hidden>🚆 n° ${escapeHtml(t.train_no)} · ${escapeHtml(t.origine_iata || '?')} → ${escapeHtml(t.destination_iata || '?')}</span>`
       : '';
-    return `<div class="train-row"${t.train_no ? ' title="Cliquer pour voir le n° de train"' : ''}>🕐 ${escapeHtml(t.heure_depart)} → ${escapeHtml(t.heure_arrivee)} · ${escapeHtml(prettyStation(t.origine))} → ${escapeHtml(prettyStation(t.destination))}${axe}${det}</div>`;
+    return `<div class="train-row"${t.train_no ? ' title="Cliquer pour voir le n° de train"' : ''}>🕐 ${escapeHtml(t.heure_depart)} → ${escapeHtml(t.heure_arrivee)} · ${escapeHtml(prettyStation(t.origine))} → ${escapeHtml(prettyStation(t.destination))}${durTxt}${axe}${det}</div>`;
   }
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g,
@@ -803,6 +844,11 @@ if (typeof document !== 'undefined') {
       if (stationsChanged || !cityIndex) { cityIndex = buildCityIndex(allStations); rebuildSuggestions(); }
 
       const trains = axeFilter ? allTrains.filter(t => axeCategory(t.axe) === axeFilter) : allTrains;
+      updateAxeCounts(allTrains);
+      const depMin = $('#dep-min').value || '';
+      const arrMax = $('#arr-max').value || '';
+      const sortMode = $('#sort-mode').value || 'places';
+      const winOpts = { depMin, arrMax, sortMode };
 
       if (!trains.length) {
         document.getElementById('map').hidden = true;
@@ -819,10 +865,14 @@ if (typeof document !== 'undefined') {
       const lines = [];
 
       if (mode === 'classic') {
-        const groups = searchClassic(trains, params.station, cityIndex);
+        const groups = searchClassic(trains, params.station, cityIndex, winOpts);
         if (!groups.length) {
           $('#results').innerHTML = '';
-          setStatus(`Aucune place depuis « ${escapeHtml(params.station)} » le ${fmtDateFR(date)}. Vérifie l'orthographe de la gare (les gares parisiennes = « PARIS (intramuros) »).`, true);
+          const topOrigins = {};
+          allTrains.forEach(t => { topOrigins[t.origine] = (topOrigins[t.origine] || 0) + 1; });
+          const top5 = Object.entries(topOrigins).sort((a, b) => b[1] - a[1]).slice(0, 5)
+            .map(([s, n]) => `${prettyStation(s)} (${n})`).join(' · ');
+          setStatus(`Aucune place depuis « ${escapeHtml(params.station)} » le ${fmtDateFR(date)}. Vérifie l'orthographe de la gare (les gares parisiennes = « PARIS (intramuros) »).<br><small>💡 Où ça bouge aujourd'hui : ${escapeHtml(top5)}</small>`, true);
           return;
         }
         setStatus(`✅ <strong>${trains.length}</strong> trains réservables le ${fmtDateFR(date)} — destinations depuis <strong>${escapeHtml(prettyStation(params.station))}</strong>${filterTag} :`);
@@ -837,7 +887,7 @@ if (typeof document !== 'undefined') {
       }
 
       if (mode === 'reverse') {
-        const groups = searchReverse(trains, params.station, cityIndex);
+        const groups = searchReverse(trains, params.station, cityIndex, winOpts);
         if (!groups.length) {
           $('#results').innerHTML = '';
           setStatus(`Aucune place vers « ${escapeHtml(params.station)} » le ${fmtDateFR(date)}. Vérifie l'orthographe (ex. « NICE VILLE »).`, true);
@@ -855,11 +905,13 @@ if (typeof document !== 'undefined') {
       }
 
       if (mode === 'split') {
-        const directs = searchDirect(trains, params.from, params.to, cityIndex);
+        const directs = searchDirect(trains, params.from, params.to, cityIndex, { depMin, arrMax });
         const itins = searchMultiSplit(trains, params.from, params.to, {
           maxHops: params.hops,
           maxConn: params.maxwait,
-          cityIndex
+          cityIndex,
+          depMin,
+          arrMax
         });
         if (!directs.length && !itins.length) {
           $('#results').innerHTML = '';
@@ -892,6 +944,7 @@ if (typeof document !== 'undefined') {
       window.__lastRender = { points, lines };   // référence pour le re-tracé après géocodage différé
       $('#results').innerHTML = html;
       plotPoints(points, lines);
+      $('#status').insertAdjacentHTML('beforeend', ' <button type="button" class="share-btn" title="Copier un lien qui relance cette recherche à l’identique">🔗 Partager cette recherche</button>');
       window.scrollTo({ top: 260, behavior: 'smooth' });
     } catch (err) {
       setStatus('❌ ' + escapeHtml(err.message || err), true);
@@ -980,6 +1033,131 @@ if (typeof document !== 'undefined') {
   refreshGlobalCount();
   renderSearchCounter();
 
+  /* ---------- Filtres horaires, tri, dates rapides ---------- */
+  $('#dep-min').addEventListener('change', () => { if (lastSearch) doSearch(lastSearch.mode, lastSearch.params); });
+  $('#arr-max').addEventListener('change', () => { if (lastSearch) doSearch(lastSearch.mode, lastSearch.params); });
+  $('#sort-mode').addEventListener('change', () => { if (lastSearch) doSearch(lastSearch.mode, lastSearch.params); });
+  document.querySelectorAll('.quick-date').forEach(b => b.addEventListener('click', () => {
+    const v = b.dataset.days === 'weekend' ? nextSaturdayISO() : addDaysISO(todayISO(), Number(b.dataset.days));
+    document.querySelectorAll('input[type="date"]').forEach(inp => inp.value = v);
+    if (lastSearch) doSearch(lastSearch.mode, lastSearch.params);
+    else setStatus(`📅 Date réglée sur ${fmtDateFR(v)} — lance une recherche !`);
+  }));
+
+  /** Affiche le nombre de trains par type dans le filtre (sur les données du jour) */
+  function updateAxeCounts(allTrains) {
+    const counts = {};
+    allTrains.forEach(t => { const c = axeCategory(t.axe); counts[c] = (counts[c] || 0) + 1; });
+    const sel = $('#axe-filter');
+    [...sel.options].forEach(o => {
+      if (!o.value) { o.textContent = `Tous les trains de l'offre (${allTrains.length})`; return; }
+      o.dataset.base = o.dataset.base || o.textContent;
+      o.textContent = `${o.dataset.base} (${counts[o.value] || 0})`;
+    });
+  }
+
+  /* ---------- Favoris (localStorage) ---------- */
+  const FAVS_KEY = '***';
+  function getFavs() { try { return JSON.parse(localStorage.getItem(FAVS_KEY) || '[]'); } catch { return []; } }
+  function saveFavs(f) { try { localStorage.setItem(FAVS_KEY, JSON.stringify(f.slice(0, 10))); } catch (e) {} renderFavs(); }
+  function favSignature(p) { return `${p.mode}|${(p.station || p.from || '').toUpperCase()}|${(p.to || '').toUpperCase()}`; }
+  function renderFavs() {
+    const el = $('#favs');
+    const favs = getFavs();
+    el.hidden = !favs.length;
+    el.innerHTML = favs.map((f, i) => {
+      const label = f.mode === 'split' ? `✂️ ${prettyStation(f.from)} → ${prettyStation(f.to)}`
+        : (f.mode === 'reverse' ? `🔄 vers ${prettyStation(f.station)}` : `🎯 depuis ${prettyStation(f.station)}`);
+      return `<span class="fav-chip"><button type="button" data-fav="${i}" class="fav-go" title="Relancer cette recherche">${escapeHtml(label)}</button><button type="button" data-del="${i}" class="fav-del" title="Retirer des favoris">×</button></span>`;
+    }).join('');
+  }
+  $('#favs').addEventListener('click', ev => {
+    const favs = getFavs();
+    const go = ev.target.closest('[data-fav]');
+    const del = ev.target.closest('[data-del]');
+    if (go) {
+      const f = favs[Number(go.dataset.fav)];
+      const form = document.querySelector(`.search-form[data-mode="${f.mode}"]`);
+      if (f.mode === 'split') { form.querySelector('[name=from]').value = f.from; form.querySelector('[name=to]').value = f.to; }
+      else { form.querySelector('[name=station]').value = f.station; }
+      form.querySelector('[name=date]').value = f.date || todayISO();
+      form.requestSubmit();
+    } else if (del) {
+      favs.splice(Number(del.dataset.del), 1);
+      saveFavs(favs);
+    }
+  });
+  document.querySelectorAll('.star-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const form = btn.closest('.search-form');
+      const mode = form.dataset.mode;
+      const fd = new FormData(form);
+      const p = { mode, station: (fd.get('station') || '').trim(), from: (fd.get('from') || '').trim(), to: (fd.get('to') || '').trim() };
+      if ((mode === 'split' && (!p.from || !p.to)) || (mode !== 'split' && !p.station)) { setStatus('Remplis d’abord ta recherche pour la mettre en favori ⭐', true); return; }
+      const favs = getFavs();
+      if (favs.some(f => favSignature(f) === favSignature(p))) { setStatus('Déjà dans tes favoris ⭐'); return; }
+      favs.unshift(p);
+      saveFavs(favs);
+      setStatus('⭐ Ajouté à tes favoris ! Retrouve-le au-dessus des onglets.');
+    });
+  });
+
+  /* ---------- Historique des recherches (8 dernières) ---------- */
+  const HIST_KEY = '***';
+  function getHistory() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch { return []; } }
+  function pushHistory(mode, params) {
+    try {
+      const h = getHistory().filter(x => !(x.mode === mode && (x.station || '') === (params.station || '') && (x.from || '') === (params.from || '') && (x.to || '') === (params.to || '')));
+      h.unshift({ mode, ...params, ts: Date.now() });
+      localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(0, 8)));
+    } catch (e) {}
+    renderHistory();
+  }
+  function renderHistory() {
+    const el = $('#history-list');
+    const h = getHistory();
+    el.innerHTML = h.length ? h.map((x, i) => {
+      const label = x.mode === 'split' ? `✂️ ${prettyStation(x.from)} → ${prettyStation(x.to)}`
+        : (x.mode === 'reverse' ? `🔄 vers ${prettyStation(x.station)}` : `🎯 depuis ${prettyStation(x.station)}`);
+      return `<button type="button" class="hist-item" data-hist="${i}" title="Relancer">${escapeHtml(label)} <span class="ac-sub">${fmtDateFR(x.date)}</span></button>`;
+    }).join('') : '<span class="hint">Aucune recherche encore — l’historique apparaîtra ici.</span>';
+  }
+  $('#history-list').addEventListener('click', ev => {
+    const b = ev.target.closest('[data-hist]');
+    if (!b) return;
+    const x = getHistory()[Number(b.dataset.hist)];
+    const form = document.querySelector(`.search-form[data-mode="${x.mode}"]`);
+    if (x.mode === 'split') { form.querySelector('[name=from]').value = x.from; form.querySelector('[name=to]').value = x.to; }
+    else { form.querySelector('[name=station]').value = x.station; }
+    form.querySelector('[name=date]').value = x.date;
+    form.requestSubmit();
+  });
+  renderHistory();
+
+  /* ---------- Partage d’une recherche (lien pré-rempli) ---------- */
+  $('#status').addEventListener('click', async ev => {
+    const btn = ev.target.closest('.share-btn');
+    if (!btn || !lastSearch) return;
+    const p = lastSearch.params;
+    const u = new URL(location.href);
+    u.search = '';
+    u.searchParams.set('mode', lastSearch.mode);
+    if (p.station) u.searchParams.set('station', p.station);
+    if (p.from) u.searchParams.set('from', p.from);
+    if (p.to) u.searchParams.set('to', p.to);
+    u.searchParams.set('date', p.date);
+    if (lastSearch.mode === 'split') { u.searchParams.set('hops', p.hops); u.searchParams.set('maxwait', p.maxwait); }
+    const url = u.toString();
+    try {
+      if (navigator.share) { await navigator.share({ title: 'TGVmax Radar — ma recherche', url }); return; }
+      await navigator.clipboard.writeText(url);
+      btn.textContent = '✅ Lien copié !';
+      setTimeout(() => { btn.textContent = '🔗 Partager cette recherche'; }, 2500);
+    } catch (e) {
+      btn.textContent = '⚠️ Copie impossible';
+    }
+  });
+
   document.querySelectorAll('.search-form').forEach(form => {
     form.addEventListener('submit', ev => {
       ev.preventDefault();
@@ -997,7 +1175,8 @@ if (typeof document !== 'undefined') {
       lastSearch = { mode, params };
       bumpSearchCount();    // perso : +1 local
       bumpGlobalCount();    // global : +1 partagé entre tous les appareils (fire-and-forget)
-            doSearch(mode, params);
+      pushHistory(mode, params);
+      doSearch(mode, params);
     });
   });
 }
