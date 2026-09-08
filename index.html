@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TGVmax Radar — places Max Jeunes (ex-TGVmax) dispo, gratuit et sans compte</title>
   <meta name="description" content="Trouve les places de l'abonnement Max Jeunes (ex-TGVmax) ouvertes à la réservation : TGV INOUI, OUIGO, Intercités de jour et de nuit. Depuis une gare, vers une destination, ou en itinéraire à correspondances. 100 % gratuit, sans compte, données open data SNCF.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#a1006b">
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚄</text></svg>">
@@ -24,7 +26,7 @@
   </nav>
 
   <div class="filterbar">
-    <label for="axe-filter">🚆 Type de train</label>
+    <label for="axe-filter">🚆 Type</label>
     <select id="axe-filter">
       <option value="">Tous les trains de l'offre</option>
       <option value="TGV INOUI">TGV INOUI</option>
@@ -34,8 +36,30 @@
       <option value="Intercités de nuit">Intercités de nuit</option>
       <option value="Autocar SNCF">Autocar SNCF</option>
     </select>
+    <label for="dep-min">Départ ≥</label>
+    <input type="time" id="dep-min">
+    <label for="arr-max">Arrivée ≤</label>
+    <input type="time" id="arr-max">
+    <label for="sort-mode">Tri</label>
+    <select id="sort-mode">
+      <option value="places">Pertinence</option>
+      <option value="heure">Prochains départs</option>
+      <option value="az">A → Z</option>
+    </select>
+    <span class="quickdates">
+      <button type="button" class="quick-date" data-days="0">Aujourd'hui</button>
+      <button type="button" class="quick-date" data-days="1">Demain</button>
+      <button type="button" class="quick-date" data-days="weekend">Week-end</button>
+    </span>
     <span class="hint">💡 Clique sur un train pour voir son numéro.</span>
   </div>
+
+  <div id="favs" class="favs" hidden></div>
+
+  <details class="history">
+    <summary>🕘 Historique des recherches</summary>
+    <div id="history-list" class="history-list"></div>
+  </details>
 
   <main>
     <section id="tab-classic" class="tab-panel active">
@@ -46,6 +70,7 @@
         <label>Date
           <input type="date" name="date" required>
         </label>
+        <button type="button" class="star-btn" title="Ajouter ce trajet aux favoris">⭐</button>
         <button type="submit">Rechercher</button>
       </form>
     </section>
@@ -58,6 +83,7 @@
         <label>Date
           <input type="date" name="date" required>
         </label>
+        <button type="button" class="star-btn" title="Ajouter ce trajet aux favoris">⭐</button>
         <button type="submit">Rechercher</button>
       </form>
     </section>
@@ -89,12 +115,13 @@
             <option value="480">8 h</option>
           </select>
         </label>
+        <button type="button" class="star-btn" title="Ajouter ce trajet aux favoris">⭐</button>
         <button type="submit">Chercher un itinéraire</button>
       </form>
       <p class="hint">✂️ Aucune place directe ? On cherche des itinéraires avec jusqu'à 4 correspondances (attente réglable de 5 min à 8 h), même journée. Les directs sont affichés aussi.</p>
     </section>
 
-    <div id="status" class="status" hidden></div>
+    <div id="status" class="status" role="status" aria-live="polite" hidden></div>
     <div id="results"></div>
     <div id="map" hidden></div>
   </main>
