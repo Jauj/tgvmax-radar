@@ -28,6 +28,7 @@
     <button class="tab active" data-tab="classic" role="tab">🎯 Depuis une gare</button>
     <button class="tab" data-tab="reverse" role="tab">🔄 Vers une destination</button>
     <button class="tab" data-tab="split" role="tab">✂️ Avec correspondances</button>
+    <button class="tab" data-tab="suivi" role="tab">📈 Suivi</button>
   </nav>
 
   <div class="quickdates" aria-label="Date rapide">
@@ -149,6 +150,39 @@
       <p class="hint">✂️ Aucune place directe ? On cherche des itinéraires avec jusqu'à 4 correspondances (attente réglable de 5 min à 8 h), même journée. Les directs sont affichés aussi.</p>
     </section>
 
+    <section id="tab-suivi" class="tab-panel">
+      <div id="suivi-setup" class="setup-box">
+        <h2>📈 Suivi d'évolution des places</h2>
+        <p>Cet onglet enregistre chaque jour le nombre de places Max Jeunes d'un trajet et trace la courbe dans le temps :</n        <strong>places qui remontent</strong> = des annulations, fonce réserver · <strong>places qui fondent</strong> = ça se vend, arrête d'attendre.</p>
+        <p>Pour l'activer, il faut le connecter à un projet Supabase (gratuit, 3 minutes) :</p>
+        <ol>
+          <li>Crée un projet sur <a href="https://supabase.com/dashboard" target="_blank" rel="noopener">supabase.com/dashboard</a></li>
+          <li>Ouvre <strong>SQL Editor → New query</strong> et colle le contenu du fichier <code>supabase-setup.sql</code> → Run</li>
+          <li>Copie l'<strong>URL du projet</strong> et la <strong>clé anon</strong> (Settings → API) dans <code>supabase-config.js</code></li>
+        </ol>
+      </div>
+      <div id="suivi-app" hidden>
+        <form class="search-form" data-mode="suivi">
+          <label class="field">Départ
+            <div class="ac-wrap"><input type="text" name="from" placeholder="Ex : Paris" autocomplete="off" required></div>
+          </label>
+          <label class="field">Arrivée
+            <div class="ac-wrap"><input type="text" name="to" placeholder="Ex : Nice" autocomplete="off" required></div>
+          </label>
+          <label class="field field-date">Date de voyage
+            <input type="date" name="date" required>
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="submit-btn">📸 Instantané</button>
+            <button type="button" id="watch-btn" class="star-btn" title="Prendre un instantané chaque fois que le site est ouvert">➕ Suivre</button>
+          </div>
+        </form>
+        <p class="hint">📸 L'instantané compte les places du jour et l'ajoute à l'historique. ➕ « Suivre » fait la même chose automatiquement à chaque visite (1× par 12 h), tant que ce trajet reste dans ta liste.</p>
+        <div id="suivi-chart" class="suivi-chart"></div>
+        <div id="suivi-table" class="suivi-table"></div>
+      </div>
+    </section>
+
     <div id="status" class="status" role="status" aria-live="polite" hidden></div>
     <div id="results"></div>
     <div id="map" hidden></div>
@@ -162,6 +196,8 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
