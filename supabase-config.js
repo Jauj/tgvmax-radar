@@ -1,10 +1,9 @@
 // ============================================================
 // Configuration Supabase pour le suivi d'évolution des places.
-// Remplis url et anonKey (clé "anon public" — conçue pour être publique)
-// une fois ton projet Supabase créé, puis exécute supabase-setup.sql
-// dans le SQL Editor de ton projet.
+// La clé "publishable" est conçue pour être publique (RLS active).
+// ⚠️ Ne JAMAIS mettre ici la clé secrète (sb_secret_…).
 // ============================================================
 window.TGV_SUPABASE = {
-  url: '',       // ex. : https://xxxxxxxx.supabase.co
-  anonKey: ''    // ex. : eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+  url: 'https://jqgyvmezudqthpljcgxp.supabase.co',
+  anonKey: 'sb_publishable_RyWWuUIxUbsb5vbPm5q5ZQ_Gd1LVDvl'
 };
