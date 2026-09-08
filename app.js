@@ -74,6 +74,56 @@ function axeCategory(axe) {
   return 'TGV INOUI';
 }
 
+/* ---------------- VILLES multi-gares ---------------- */
+/** Groupes de gares desservant la même ville (noms du dataset).
+ *  Paris/Lyon/Lille sont déjà groupés par la SNCF (« X (intramuros) »). */
+const CITY_GROUPS = {
+  'AVIGNON': ['AVIGNON TGV', 'AVIGNON CENTRE'],
+  'AIX EN PROVENCE': ['AIX EN PROVENCE TGV', 'AIX EN PROVENCE CENTRE'],
+  'MONTPELLIER': ['MONTPELLIER SAINT ROCH', 'MONTPELLIER SUD DE FRANCE'],
+  'NIMES': ['NIMES CENTRE', 'NIMES PONT DU GARD'],
+  'MACON': ['MACON VILLE', 'MACON LOCHE TGV'],
+  'TOURS': ['TOURS', 'ST PIERRE DES CORPS'],
+  'ORLEANS': ['LES AUBRAIS ORLEANS', 'ORLEANS'],
+  'BESANCON': ['BESANCON FRANCHE COMTE TGV', 'BESANCON VIOTTE'],
+  'VALENCE': ['VALENCE TGV AUVERGNE RHONE ALPES', 'VALENCE VILLE'],
+  'STRASBOURG': ['STRASBOURG', 'STRASBOURG VILLE']
+};
+/** Construit l'index ville → gares. Clés : norm(ville) ET norm(« X (intramuros) »).
+ *  NB : la facette ne rend que le top 100 des gares ; les gares secondaires des
+ *  groupes connus (AVIGNON CENTRE, MACON LOCHE TGV…) existent bien dans les
+ *  enregistrements — on garde donc la liste complète du groupe. */
+function buildCityIndex(stationNames) {
+  const present = new Set(stationNames.map(norm));
+  const idx = new Map();
+  for (const [city, stations] of Object.entries(CITY_GROUPS)) {
+    if (stations.some(s => present.has(norm(s)))) idx.set(norm(city), { city, stations });
+  }
+  for (const name of stationNames) {
+    if (/\(intramuros\)/i.test(name)) {
+      idx.set(norm(name), { city: name.replace(/\s*\(intramuros\)\s*/i, '').trim(), stations: [name] });
+    }
+  }
+  return idx;
+}
+/** Étend un libellé saisi en ensemble de gares normalisées :
+ *  « AVIGNON (toutes gares) » → {avignon tgv, avignon centre} ;
+ *  « PARIS (intramuros) » → {paris intramuros} ; gare simple → {elle-même}. */
+function expandStationLabel(label, cityIndex) {
+  const raw = String(label || '');
+  // Suffixe ville-groupé, cherché sur le libellé BRUT (les parenthèses disparaissent au norm)
+  const m = raw.match(/\((?:toutes les gares|toutes gares)\)\s*$/i);
+  if (m && cityIndex) {
+    const cityKey = norm(raw.slice(0, m.index).trim());
+    if (cityIndex.has(cityKey)) return new Set(cityIndex.get(cityKey).stations.map(norm));
+  }
+  const n = norm(raw);
+  if (cityIndex && cityIndex.has(n)) {
+    return new Set(cityIndex.get(n).stations.map(norm));
+  }
+  return new Set([n]);
+}
+
 /* ---------------- API SNCF ---------------- */
 const dayCache = new Map();
 async function fetchDay(dateISO) {
@@ -101,8 +151,8 @@ async function fetchStationNames() {
 }
 
 /* ---------------- RECHERCHES (pures) ---------------- */
-function findByOrigin(trains, from) { return trains.filter(t => norm(t.origine) === norm(from)); }
-function findByDest(trains, to) { return trains.filter(t => norm(t.destination) === norm(to)); }
+function findByOrigin(trains, fromSet) { return trains.filter(t => fromSet.has(norm(t.origine))); }
+function findByDest(trains, toSet) { return trains.filter(t => toSet.has(norm(t.destination))); }
 
 function groupBySorted(trains, keyFn) {
   const m = new Map();
@@ -119,24 +169,27 @@ function groupBySorted(trains, keyFn) {
     }))
     .sort((a, b) => b.trains.length - a.trains.length || a.station.localeCompare(b.station, 'fr'));
 }
-/** Toutes les destinations atteignables depuis une gare (hors trains intramuros→intramuros) */
-function searchClassic(trains, from) {
+/** Toutes les destinations atteignables depuis une gare/ville (hors trains intra-gare) */
+function searchClassic(trains, from, cityIndex) {
+  const fromSet = expandStationLabel(from, cityIndex);
   return groupBySorted(
-    findByOrigin(trains, from).filter(t => norm(t.destination) !== norm(t.origine)),
+    findByOrigin(trains, fromSet).filter(t => !fromSet.has(norm(t.destination))),
     t => t.destination
   );
 }
-/** Toutes les origines qui desservent une destination (hors trains intramuros→intramuros) */
-function searchReverse(trains, to) {
+/** Toutes les origines qui desservent une gare/ville (hors trains intra-gare) */
+function searchReverse(trains, to, cityIndex) {
+  const toSet = expandStationLabel(to, cityIndex);
   return groupBySorted(
-    findByDest(trains, to).filter(t => norm(t.destination) !== norm(t.origine)),
+    findByDest(trains, toSet).filter(t => !toSet.has(norm(t.origine))),
     t => t.origine
   );
 }
-/** Trains directs entre deux gares */
-function searchDirect(trains, from, to) {
-  return findByOrigin(trains, from)
-    .filter(t => norm(t.destination) === norm(to))
+/** Trains directs entre deux gares/villes */
+function searchDirect(trains, from, to, cityIndex) {
+  const fromSet = expandStationLabel(from, cityIndex), toSet = expandStationLabel(to, cityIndex);
+  return findByOrigin(trains, fromSet)
+    .filter(t => toSet.has(norm(t.destination)) && norm(t.origine) !== norm(t.destination))
     .sort((a, b) => String(a.heure_depart || '').localeCompare(String(b.heure_depart || '')));
 }
 /**
@@ -154,8 +207,10 @@ function searchMultiSplit(trains, from, to, opts = {}) {
   const maxConn = opts.maxConn ?? MAX_CONNECTION_MIN;
   const maxHops = Math.max(1, Math.min(4, opts.maxHops ?? 1));
   const maxResults = opts.maxResults ?? 60;
-  const nFrom = norm(from), nTo = norm(to);
-  if (nFrom === nTo) return [];
+  const cityIndex = opts.cityIndex || null;
+  const fromSet = expandStationLabel(from, cityIndex);
+  const toSet = expandStationLabel(to, cityIndex);
+  if ([...fromSet].some(x => toSet.has(x))) return [];
 
   const byOrigin = new Map();
   for (const t of trains) {
@@ -169,7 +224,7 @@ function searchMultiSplit(trains, from, to, opts = {}) {
 
   const results = [];
   const LEVEL_CAP = 300;
-  let partials = [{ legs: [], hub: from, arrival: null, visited: new Set([nFrom]) }];
+  let partials = [{ legs: [], hub: from, arrival: null, visited: fromSet }];
 
   for (let level = 0; level <= maxHops; level++) {
     const next = [];
@@ -179,7 +234,7 @@ function searchMultiSplit(trains, from, to, opts = {}) {
       if (level > 0) {
         // Clôture : p.hub → B
         for (const t of outs) {
-          if (norm(t.destination) !== nTo) continue;
+          if (!toSet.has(norm(t.destination))) continue;
           const d = depM(t);
           if (d == null || !waitOk(p.arrival, d)) continue;
           results.push({ legs: [...p.legs, t] });
@@ -191,7 +246,7 @@ function searchMultiSplit(trains, from, to, opts = {}) {
         // Extension vers un nouveau hub (jamais la gare d'arrivée, jamais une gare déjà visitée)
         for (const t of outs) {
           const nd = norm(t.destination);
-          if (nd === nTo || nd === norm(p.hub) || p.visited.has(nd)) continue;
+          if (toSet.has(nd) || p.visited.has(nd)) continue;
           const d = depM(t), a = arrM(t);
           if (d == null || a == null || !waitOk(p.arrival, d)) continue;
           const visited = new Set(p.visited); visited.add(nd);
@@ -264,7 +319,8 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     norm, parseHM, arrivalMinutes, todayISO, addDaysISO, fmtDateFR,
     fetchDay, fetchStationNames,
-    searchClassic, searchReverse, searchDirect, searchMultiSplit, fmtDur, axeCategory, AXE_CATEGORIES
+    searchClassic, searchReverse, searchDirect, searchMultiSplit, fmtDur, axeCategory, AXE_CATEGORIES,
+    buildCityIndex, expandStationLabel
   };
 }
 
@@ -452,15 +508,28 @@ if (typeof document !== 'undefined') {
     markersLayer = L.layerGroup().addTo(map);
     return map;
   }
-  function plotPoints(points) {
+  function plotPoints(points, lines) {
     const el = document.getElementById('map');
-    if (!points.length) { el.hidden = true; return; }
+    const pts = points.filter(p => p.coord);
+    const lns = (lines || [])
+      .map(l => ({ ...l, coords: (l.coords || []).filter(Boolean) }))
+      .filter(l => l.coords.length >= 2);
+    if (!pts.length && !lns.length) { el.hidden = true; return; }
     el.hidden = false;
     ensureMap();
     markersLayer.clearLayers();
+    // Lignes d'abord (sous les marqueurs) : chaque trajet possible est symbolisé
+    lns.forEach(l => {
+      L.polyline(l.coords, {
+        color: l.color || '#a1006b',
+        weight: l.weight || 2.5,
+        opacity: 0.65,
+        dashArray: l.dashArray || null
+      }).addTo(markersLayer);
+    });
     const bounds = [];
-    points.forEach(p => {
-      if (!p.coord) return;
+    lns.forEach(l => l.coords.forEach(c => bounds.push(c)));
+    pts.forEach(p => {
       bounds.push(p.coord);
       L.circleMarker(p.coord, {
         radius: p.major ? 8 : 6,
@@ -476,7 +545,7 @@ if (typeof document !== 'undefined') {
 
   /* ---------- UI ---------- */
   const $ = sel => document.querySelector(sel);
-  const prettyStation = s => String(s || '').replace(/\s*\(intramuros\)\s*/i, ' (toutes gares) ');
+  const prettyStation = s => String(s || '').replace(/\s*\(intramuros\)\s*/i, ' (toutes gares)');
   const sncfConnectLink = (from, to, date) => SNCF_SEARCH_URL;
 
   /* ---------- État de recherche + filtre type de train ---------- */
@@ -600,14 +669,79 @@ if (typeof document !== 'undefined') {
     inp.value = todayISO();
   });
 
-  /* ---------- Autocomplétion gares ---------- */
-  const stationList = new Set();
-  function refreshDatalist() {
-    $('#stations').innerHTML = [...stationList].sort((a, b) => a.localeCompare(b, 'fr'))
-      .map(s => `<option value="${escapeHtml(s)}">`).join('');
+  /* ---------- Gares, villes multi-gares & autocomplétion ---------- */
+  let allStations = [];
+  let cityIndex = null;
+  let suggestions = [];
+
+  function rebuildSuggestions() {
+    const list = [];
+    if (cityIndex) {
+      for (const [, g] of cityIndex) {
+        if (g.stations.length >= 2) {
+          list.push({ display: `${g.city} — toutes les gares`, value: `${g.city} (toutes gares)`, sub: `${g.stations.length} gares` });
+        }
+      }
+    }
+    for (const name of allStations) {
+      list.push({ display: prettyStation(name), value: name, sub: null });
+    }
+    suggestions = list;
   }
-  fetchStationNames().then(names => { names.forEach(n => stationList.add(n)); refreshDatalist(); })
-    .catch(() => {});
+
+  fetchStationNames().then(names => {
+    allStations = names;
+    cityIndex = buildCityIndex(allStations);
+    rebuildSuggestions();
+  }).catch(() => {});
+
+  /** Menu déroulant auto (tactile + clavier) branché sur un champ texte */
+  function initAutocomplete(input) {
+    const wrap = input.closest('.ac-wrap') || input.parentElement;
+    let listEl = null, activeIdx = -1, current = [];
+
+    function close() { if (listEl) { listEl.remove(); listEl = null; } activeIdx = -1; }
+    function choose(s) { input.value = s.value; close(); }
+
+    function open() {
+      close();
+      const q = norm(input.value);
+      let src = suggestions;
+      if (q) {
+        const starts = src.filter(s => norm(s.display).startsWith(q) || norm(s.value).startsWith(q));
+        const incl = src.filter(s => !starts.includes(s) && norm(s.display).includes(q));
+        src = [...starts, ...incl];
+      }
+      current = src.slice(0, 14);
+      if (!current.length) return;
+      listEl = document.createElement('div');
+      listEl.className = 'ac-list';
+      current.forEach((s, i) => {
+        const it = document.createElement('div');
+        it.className = 'ac-item' + (i === activeIdx ? ' active' : '');
+        it.innerHTML = escapeHtml(s.display) + (s.sub ? ` <span class="ac-sub">(${escapeHtml(s.sub)})</span>` : '');
+        it.addEventListener('pointerdown', ev => { ev.preventDefault(); choose(s); });
+        listEl.appendChild(it);
+      });
+      wrap.appendChild(listEl);
+    }
+
+    input.addEventListener('focus', open);
+    input.addEventListener('input', open);
+    input.addEventListener('keydown', ev => {
+      if (!listEl) return;
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        activeIdx = ev.key === 'ArrowDown' ? Math.min(activeIdx + 1, current.length - 1) : Math.max(activeIdx - 1, 0);
+        [...listEl.children].forEach((c, i) => c.classList.toggle('active', i === activeIdx));
+      } else if (ev.key === 'Enter') {
+        if (activeIdx >= 0 && current[activeIdx]) { ev.preventDefault(); choose(current[activeIdx]); }
+        else { close(); }
+      } else if (ev.key === 'Escape') { close(); }
+    });
+    input.addEventListener('blur', () => setTimeout(close, 180));
+  }
+  document.querySelectorAll('.ac-wrap input[type="text"]').forEach(initAutocomplete);
 
   /* ---------- Soumission des formulaires ---------- */
   async function doSearch(mode, params) {
@@ -615,9 +749,12 @@ if (typeof document !== 'undefined') {
     try {
       setStatus('⏳ Interrogation des données SNCF…');
       const allTrains = await fetchDay(date);
-      stationList.add(params.from, params.to, params.station);
-      allTrains.forEach(t => { stationList.add(t.origine); stationList.add(t.destination); });
-      refreshDatalist();
+      // Enrichit le pool de gares + reconstruit l'index villes si besoin
+      let stationsChanged = false;
+      const addName = n => { if (n && !allStations.includes(n)) { allStations.push(n); stationsChanged = true; } };
+      addName(params.from); addName(params.to); addName(params.station);
+      allTrains.forEach(t => { addName(t.origine); addName(t.destination); });
+      if (stationsChanged || !cityIndex) { cityIndex = buildCityIndex(allStations); rebuildSuggestions(); }
 
       const trains = axeFilter ? allTrains.filter(t => axeCategory(t.axe) === axeFilter) : allTrains;
 
@@ -633,9 +770,10 @@ if (typeof document !== 'undefined') {
 
       let html = '';
       const points = [];
+      const lines = [];
 
       if (mode === 'classic') {
-        const groups = searchClassic(trains, params.station);
+        const groups = searchClassic(trains, params.station, cityIndex);
         if (!groups.length) {
           $('#results').innerHTML = '';
           setStatus(`Aucune place depuis « ${escapeHtml(params.station)} » le ${fmtDateFR(date)}. Vérifie l'orthographe de la gare (les gares parisiennes = « PARIS (intramuros) »).`, true);
@@ -643,12 +781,17 @@ if (typeof document !== 'undefined') {
         }
         setStatus(`✅ <strong>${trains.length}</strong> trains réservables le ${fmtDateFR(date)} — destinations depuis <strong>${escapeHtml(prettyStation(params.station))}</strong>${filterTag} :`);
         html = renderGroups('🎯 Depuis ' + escapeHtml(prettyStation(params.station)), groups, params.station, date);
-        points.push({ coord: getKnownCoord(params.station), label: prettyStation(params.station), info: 'Départ', color: '#2563eb', major: true });
-        groups.forEach(g => points.push({ coord: getKnownCoord(g.station), label: prettyStation(g.station), info: `${g.trains.length} train(s) TGVmax` }));
+        const originCoord = getKnownCoord(params.station);
+        points.push({ coord: originCoord, label: prettyStation(params.station), info: 'Départ', color: '#2563eb', major: true });
+        groups.forEach(g => {
+          const c = getKnownCoord(g.station);
+          points.push({ coord: c, label: prettyStation(g.station), info: `${g.trains.length} train(s) TGVmax` });
+          if (originCoord && c) lines.push({ coords: [originCoord, c] });
+        });
       }
 
       if (mode === 'reverse') {
-        const groups = searchReverse(trains, params.station);
+        const groups = searchReverse(trains, params.station, cityIndex);
         if (!groups.length) {
           $('#results').innerHTML = '';
           setStatus(`Aucune place vers « ${escapeHtml(params.station)} » le ${fmtDateFR(date)}. Vérifie l'orthographe (ex. « NICE VILLE »).`, true);
@@ -656,15 +799,21 @@ if (typeof document !== 'undefined') {
         }
         setStatus(`✅ <strong>${trains.length}</strong> trains réservables le ${fmtDateFR(date)} — origines pour arriver à <strong>${escapeHtml(prettyStation(params.station))}</strong>${filterTag} :`);
         html = renderGroups('🔄 Vers ' + escapeHtml(prettyStation(params.station)), groups, params.station, date);
-        points.push({ coord: getKnownCoord(params.station), label: prettyStation(params.station), info: 'Arrivée', color: '#2563eb', major: true });
-        groups.forEach(g => points.push({ coord: getKnownCoord(g.station), label: prettyStation(g.station), info: `${g.trains.length} train(s) TGVmax` }));
+        const destCoord = getKnownCoord(params.station);
+        points.push({ coord: destCoord, label: prettyStation(params.station), info: 'Arrivée', color: '#2563eb', major: true });
+        groups.forEach(g => {
+          const c = getKnownCoord(g.station);
+          points.push({ coord: c, label: prettyStation(g.station), info: `${g.trains.length} train(s) TGVmax` });
+          if (destCoord && c) lines.push({ coords: [c, destCoord] });
+        });
       }
 
       if (mode === 'split') {
-        const directs = searchDirect(trains, params.from, params.to);
+        const directs = searchDirect(trains, params.from, params.to, cityIndex);
         const itins = searchMultiSplit(trains, params.from, params.to, {
           maxHops: params.hops,
-          maxConn: params.maxwait
+          maxConn: params.maxwait,
+          cityIndex
         });
         if (!directs.length && !itins.length) {
           $('#results').innerHTML = '';
@@ -687,11 +836,16 @@ if (typeof document !== 'undefined') {
         itins.slice(0, 15).forEach(it => it.hubs.forEach(hh => { hubCount[hh] = (hubCount[hh] || 0) + 1; }));
         Object.entries(hubCount).slice(0, 20).forEach(([hh, n]) =>
           points.push({ coord: getKnownCoord(hh), label: prettyStation(hh), info: `${n} itinéraire(s) via cette gare`, color: '#a1006b' }));
+        // Une ligne par itinéraire (chaîne complète départ → hubs → arrivée)
+        itins.slice(0, 8).forEach(it => {
+          const chain = [params.from, ...it.hubs, params.to].map(getKnownCoord);
+          if (chain.every(Boolean)) lines.push({ coords: chain, weight: 2.5 });
+        });
       }
 
-      window.__lastPoints = points;   // référence pour le re-tracé après géocodage différé
+      window.__lastRender = { points, lines };   // référence pour le re-tracé après géocodage différé
       $('#results').innerHTML = html;
-      plotPoints(points.filter(p => p.coord));
+      plotPoints(points, lines);
       window.scrollTo({ top: 260, behavior: 'smooth' });
     } catch (err) {
       setStatus('❌ ' + escapeHtml(err.message || err), true);
@@ -704,8 +858,8 @@ if (typeof document !== 'undefined') {
     if (geoCache[key]) return geoCache[key];
     // géocodage en tâche de fond : re-trace la carte quand la coordonnée arrive
     getCoord(station, () => {
-      const pts = window.__lastPoints || [];
-      if (pts.length) plotPoints(pts.filter(p => p.coord));
+      const r = window.__lastRender;
+      if (r && (r.points.length || r.lines.length)) plotPoints(r.points, r.lines);
     });
     return null;
   }
