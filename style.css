@@ -24,6 +24,18 @@ body {
 .hero h1 { margin: 0 0 6px; font-size: 1.7rem; }
 .hero p { margin: 0; color: var(--muted); }
 .hero small { font-size: .85rem; }
+.counter-pill {
+  display: inline-block;
+  margin: 10px auto 6px;
+  padding: 6px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: .88rem;
+  color: var(--ink);
+  box-shadow: 0 2px 8px rgba(28, 35, 51, .06);
+}
+.counter-pill strong { color: var(--accent); font-size: 1rem; }
 
 .tabs {
   display: flex;
