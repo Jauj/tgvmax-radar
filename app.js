@@ -1179,4 +1179,121 @@ if (typeof document !== 'undefined') {
       doSearch(mode, params);
     });
   });
+
+  /* ---------- Suivi d'évolution des places (Supabase, niveau 2) ---------- */
+  const SB_CFG = window.TGV_SUPABASE || {};
+  const sbReady = !!(SB_CFG.url && SB_CFG.anonKey && window.supabase);
+  const sb = sbReady ? window.supabase.createClient(SB_CFG.url, SB_CFG.anonKey) : null;
+  const WATCH_KEY = '***';
+
+  function updateSuiviUI() {
+    const setup = document.getElementById('suivi-setup');
+    const app = document.getElementById('suivi-app');
+    if (!setup || !app) return;
+    setup.hidden = sbReady;
+    app.hidden = !sbReady;
+  }
+  updateSuiviUI();
+
+  function getWatched() {
+    try { return JSON.parse(localStorage.getItem(WATCH_KEY) || '[]'); } catch (e) { return []; }
+  }
+  function saveWatched(w) { try { localStorage.setItem(WATCH_KEY, JSON.stringify(w.slice(0, 8))); } catch (e) {} }
+
+  /** Compte les places d'un trajet et enregistre un instantané dans Supabase */
+  async function takeSnapshot(from, to, forDate) {
+    const trains = await fetchDay(forDate);
+    const directs = searchDirect(trains, from, to, cityIndex);
+    const itins = searchMultiSplit(trains, from, to, { maxHops: 4, maxConn: 360, cityIndex });
+    const row = { route_from: from, route_to: to, for_date: forDate, oui_count: directs.length, itins_count: itins.length };
+    const { error } = await sb.from('route_snapshots').insert(row);
+    if (error) throw new Error('Supabase : ' + error.message);
+    return row;
+  }
+
+  /** Courbe SVG sans dépendance : nombre de directs au fil des relevés */
+  function renderChart(container, series) {
+    if (!series.length) { container.innerHTML = '<p class="hint">Aucun instantané pour ce trajet encore — prends-en un !</p>'; return; }
+    const W = 640, H = 240, PAD = 40;
+    const maxY = Math.max(...series.map(s => s.y), 1);
+    const stepX = series.length > 1 ? (W - PAD * 2) / (series.length - 1) : 0;
+    const pt = i => [PAD + i * stepX, H - PAD - (series[i].y / maxY) * (H - PAD * 2)];
+    const path = series.map((s, i) => (i ? 'L' : 'M') + pt(i)[0].toFixed(1) + ' ' + pt(i)[1].toFixed(1)).join(' ');
+    const dots = series.map((s, i) => `<circle cx="${pt(i)[0].toFixed(1)}" cy="${pt(i)[1].toFixed(1)}" r="4" fill="#a1006b"><title>${escapeHtml(s.x)} : ${s.y} place(s)</title></circle>`).join('');
+    const gridY = [0, Math.round(maxY / 2), maxY].map(v => {
+      const y = H - PAD - (v / maxY) * (H - PAD * 2);
+      return `<line x1="${PAD}" y1="${y.toFixed(1)}" x2="${W - PAD}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="1"/><text x="6" y="${(y + 4).toFixed(1)}" font-size="11" fill="var(--muted)">${Math.round(v)}</text>`;
+    }).join('');
+    const labels = series.length > 1
+      ? `<text x="${PAD}" y="${H - 12}" font-size="11" fill="var(--muted)">${escapeHtml(series[0].x)}</text><text x="${W - PAD}" y="${H - 12}" font-size="11" fill="var(--muted)" text-anchor="end">${escapeHtml(series[series.length - 1].x)}</text>`
+      : '';
+    container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Évolution des places" style="width:100%;height:auto;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm)">${gridY}<path d="${path}" fill="none" stroke="#a1006b" stroke-width="2.5"/>${dots}${labels}</svg>`;
+  }
+
+  async function renderSuiviHistory(from, to, forDate) {
+    const chart = document.getElementById('suivi-chart');
+    const table = document.getElementById('suivi-table');
+    const { data, error } = await sb.from('route_snapshots')
+      .select('captured_at, oui_count, itins_count')
+      .eq('route_from', from).eq('route_to', to).eq('for_date', forDate)
+      .order('captured_at', { ascending: true });
+    if (error) { chart.innerHTML = `<p class="hint">⚠️ ${escapeHtml(error.message)}</p>`; table.innerHTML = ''; return; }
+    const rows = data || [];
+    const series = rows.map(r => ({
+      x: new Date(r.captured_at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
+      y: r.oui_count
+    }));
+    renderChart(chart, series);
+    let trend = '';
+    if (rows.length >= 2) {
+      const diff = rows[rows.length - 1].oui_count - rows[rows.length - 2].oui_count;
+      trend = diff > 0 ? `📈 +${diff} place(s) depuis le dernier relevé — des annulations, fonce réserver !`
+        : (diff < 0 ? `📉 ${diff} place(s) depuis le dernier relevé — ça se vend.` : '➖ Pas de changement depuis le dernier relevé.');
+    }
+    table.innerHTML = (trend ? `<p class="hint">${trend}</p>` : '')
+      + `<details class="history"><summary>Données brutes (${rows.length} relevé${rows.length > 1 ? 's' : ''})</summary><div class="history-list">`
+      + rows.slice().reverse().map(r => `<div class="hist-item"><span>${new Date(r.captured_at).toLocaleString('fr-FR')} · ${r.oui_count} direct(s) · ${r.itins_count} itinéraire(s)</span></div>`).join('')
+      + '</div></details>';
+  }
+
+  document.querySelector('.search-form[data-mode="suivi"]').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    if (!sb) return;
+    const fd = new FormData(ev.target);
+    const from = (fd.get('from') || '').trim(), to = (fd.get('to') || '').trim(), forDate = fd.get('date');
+    const btn = ev.target.querySelector('.submit-btn');
+    btn.disabled = true;
+    try {
+      const row = await takeSnapshot(from, to, forDate);
+      setStatus(`📸 Instantané enregistré : ${row.oui_count} direct(s), ${row.itins_count} itinéraire(s) pour le ${fmtDateFR(forDate)}`);
+      await renderSuiviHistory(from, to, forDate);
+    } catch (e) { setStatus('❌ ' + escapeHtml(e.message), true); }
+    btn.disabled = false;
+  });
+
+  document.getElementById('watch-btn').addEventListener('click', async () => {
+    const form = document.querySelector('.search-form[data-mode="suivi"]');
+    const fd = new FormData(form);
+    const from = (fd.get('from') || '').trim(), to = (fd.get('to') || '').trim(), forDate = fd.get('date');
+    if (!from || !to || !forDate) { setStatus('Remplis le trajet et la date à surveiller', true); return; }
+    const w = getWatched();
+    if (!w.some(x => norm(x.from) === norm(from) && norm(x.to) === norm(to))) { w.unshift({ from, to, forDate }); saveWatched(w); }
+    setStatus(`👁️ ${escapeHtml(prettyStation(from))} → ${escapeHtml(prettyStation(to))} est suivi : un instantané sera pris à chaque visite du site (1× par 12 h).`);
+    try { await takeSnapshot(from, to, forDate); } catch (e) {}
+  });
+
+  // Auto-instantanés des trajets suivis au chargement (1× par 12 h, max 3 par visite)
+  (async function autoSnapshots() {
+    if (!sb) return;
+    const THROTTLE_KEY = '***';
+    let last = {};
+    try { last = JSON.parse(localStorage.getItem(THROTTLE_KEY) || '{}'); } catch (e) {}
+    const watched = getWatched().slice(0, 3);
+    for (const route of watched) {
+      const sig = `${norm(route.from)}>${norm(route.to)}>${route.forDate}`;
+      if (Date.now() - (last[sig] || 0) < 12 * 3600 * 1000) continue;
+      try { await takeSnapshot(route.from, route.to, route.forDate); last[sig] = Date.now(); } catch (e) {}
+    }
+    try { localStorage.setItem(THROTTLE_KEY, JSON.stringify(last)); } catch (e) {}
+  })();
 }
