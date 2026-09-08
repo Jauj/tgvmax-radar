@@ -1,0 +1,13 @@
+{
+  "name": "TGVmax Radar",
+  "short_name": "TGVmax Radar",
+  "description": "Places Max Jeunes (ex-TGVmax) ouvertes à la réservation, sur une carte. Gratuit, sans compte.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f6f7fb",
+  "theme_color": "#a1006b",
+  "lang": "fr",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
