@@ -864,6 +864,59 @@ if (typeof document !== 'undefined') {
     return null;
   }
 
+  /* ---------- Compteurs de recherches (perso local + global public) ---------- */
+  const COUNTER_KEY = 'tgvmax_radar_searchcount_v1';
+  const GLOBAL_COUNTER_API = 'https://abacus.jasoncameron.dev';
+  const GLOBAL_COUNTER_NS = 'tgvmax-radar/searches';
+  let globalCount = null;
+  function getSearchCount() {
+    try { return Number(localStorage.getItem(COUNTER_KEY) || 0) || 0; } catch (e) { return 0; }
+  }
+  function searchRank(n) {
+    if (n >= 100) return '🏆 Légende du rail';
+    if (n >= 50) return '🚉 Chef de gare';
+    if (n >= 25) return '🛤️ Aiguilleur fou';
+    if (n >= 10) return '⚡ Chasseur de places';
+    if (n >= 5) return '🎟️ Voyageur régulier';
+    return '🎫 Touriste du rail';
+  }
+  function renderSearchCounter() {
+    const mine = getSearchCount();
+    const el = document.getElementById('search-counter');
+    if (!el) return;
+    const parts = [];
+    if (globalCount != null) parts.push(`🌍 <strong>${globalCount.toLocaleString('fr-FR')}</strong> recherche${globalCount > 1 ? 's' : ''} sur tous les appareils`);
+    if (mine >= 1) parts.push(`dont <strong>${mine}</strong> par toi — ${searchRank(mine)}`);
+    if (!parts.length) { el.hidden = true; return; }
+    el.hidden = false;
+    el.innerHTML = '🚄 ' + parts.join(' · ');
+  }
+  function bumpSearchCount() {
+    try { localStorage.setItem(COUNTER_KEY, String(getSearchCount() + 1)); } catch (e) {}
+    renderSearchCounter();
+  }
+  /** Compteur GLOBAL partagé (Abacus, sans clé) — fire-and-forget, jamais bloquant */
+  async function refreshGlobalCount() {
+    try {
+      const r = await fetch(`${GLOBAL_COUNTER_API}/get/${GLOBAL_COUNTER_NS}`, { headers: { Accept: 'application/json' } });
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.value != null) { globalCount = Number(j.value); renderSearchCounter(); }
+      }
+    } catch (e) {}
+  }
+  async function bumpGlobalCount() {
+    try {
+      const r = await fetch(`${GLOBAL_COUNTER_API}/hit/${GLOBAL_COUNTER_NS}`, { headers: { Accept: 'application/json' } });
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.value != null) { globalCount = Number(j.value); renderSearchCounter(); }
+      }
+    } catch (e) {}
+  }
+  refreshGlobalCount();
+  renderSearchCounter();
+
   document.querySelectorAll('.search-form').forEach(form => {
     form.addEventListener('submit', ev => {
       ev.preventDefault();
@@ -879,7 +932,9 @@ if (typeof document !== 'undefined') {
       };
       if ((mode === 'split' && (!params.from || !params.to)) || (mode !== 'split' && !params.station)) return;
       lastSearch = { mode, params };
-      doSearch(mode, params);
+      bumpSearchCount();    // perso : +1 local
+      bumpGlobalCount();    // global : +1 partagé entre tous les appareils (fire-and-forget)
+            doSearch(mode, params);
     });
   });
 }
