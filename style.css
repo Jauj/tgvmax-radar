@@ -132,7 +132,7 @@ main { max-width: 980px; margin: 0 auto; padding: 12px 16px 40px; }
 }
 .card-station { font-weight: 800; font-size: 1.02rem; }
 .badge {
-  background: color-mix(in srgb, var(--ok) 12%, white);
+  background: color-mix(in srgb, var(--ok) 12%, var(--card));
   color: var(--ok);
   font-weight: 700;
   font-size: .78rem;
@@ -213,13 +213,83 @@ main { max-width: 980px; margin: 0 auto; padding: 12px 16px 40px; }
   gap: 10px;
 }
 .ac-item:last-child { border-bottom: 0; }
-.ac-item:hover, .ac-item.active { background: color-mix(in srgb, var(--accent) 10%, white); }
+.ac-item:hover, .ac-item.active { background: color-mix(in srgb, var(--accent) 10%, var(--card)); }
 .ac-item .ac-sub {
   flex-shrink: 0;
   font-size: .74rem;
   color: var(--accent);
   font-weight: 700;
   white-space: nowrap;
+}
+
+/* ---------------- Favoris, historique, partage ---------------- */
+.favs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 8px auto 0;
+  padding: 0 12px;
+}
+.fav-chip { display: inline-flex; align-items: stretch; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; background: var(--card); }
+.fav-go { border: 0; background: transparent; padding: 7px 12px; cursor: pointer; font-size: .86rem; font-weight: 600; font-family: inherit; color: var(--ink); }
+.fav-go:hover { background: color-mix(in srgb, var(--accent) 14%, var(--card)); }
+.fav-del { border: 0; background: transparent; padding: 7px 10px; cursor: pointer; color: var(--muted); font-size: .9rem; }
+.fav-del:hover { color: #b91c1c; }
+
+.history { max-width: 980px; margin: 8px auto 0; padding: 0 12px; }
+.history summary { cursor: pointer; font-size: .86rem; font-weight: 600; color: var(--muted); padding: 6px 0; }
+.history-list { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; }
+.hist-item {
+  text-align: left; border: 1px solid var(--border); background: var(--card); border-radius: 10px;
+  padding: 9px 12px; cursor: pointer; font-size: .9rem; font-family: inherit; color: var(--ink);
+  display: flex; justify-content: space-between; gap: 10px; align-items: center;
+}
+.hist-item:hover { border-color: var(--accent); }
+
+.share-btn {
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: .8rem;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+.share-btn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+.quickdates { display: inline-flex; gap: 6px; }
+.quick-date {
+  border: 1px solid var(--border); background: var(--card); border-radius: 999px;
+  padding: 6px 12px; font-size: .84rem; font-weight: 600; cursor: pointer; font-family: inherit; color: var(--ink);
+}
+.quick-date:hover { border-color: var(--accent); color: var(--accent); }
+
+.star-btn {
+  border: 1px solid var(--border); background: var(--card); border-radius: 10px;
+  padding: 11px 12px; font-size: 1rem; cursor: pointer; font-family: inherit;
+}
+.star-btn:hover { border-color: var(--accent); }
+
+/* ---------------- Thème sombre automatique ---------------- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #10141f;
+    --card: #1a2030;
+    --ink: #e8ebf3;
+    --muted: #9aa4b8;
+    --border: #2a3247;
+  }
+  .filterbar select, .search-form input, .search-form select, .quick-date, .star-btn, .fav-chip, .hist-item { background: var(--card); color: var(--ink); }
+  .ac-list { box-shadow: 0 10px 28px rgba(0, 0, 0, .55); }
+  .badge { background: color-mix(in srgb, var(--ok) 22%, var(--card)); }
+  .ac-item:hover, .ac-item.active { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
+  .fav-go:hover { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
+  .share-btn:hover { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+  .train-details { color: #8ab4ff; }
+  .conn { color: #7ea6ff; }
 }
 
 /* ---------------- MOBILE ---------------- */
