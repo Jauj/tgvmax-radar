@@ -508,12 +508,20 @@ if (typeof document !== 'undefined') {
     markersLayer = L.layerGroup().addTo(map);
     return map;
   }
-  function plotPoints(points, lines) {
+  function plotPoints(points, lines, opts = {}) {
+    const fit = opts.fit !== false;
     const el = document.getElementById('map');
     const pts = points.filter(p => p.coord);
+    const seenLines = new Set();
     const lns = (lines || [])
       .map(l => ({ ...l, coords: (l.coords || []).filter(Boolean) }))
-      .filter(l => l.coords.length >= 2);
+      .filter(l => {
+        if (l.coords.length < 2) return false;
+        const sig = JSON.stringify(l.coords.map(c => c.map(x => Math.round(x * 1000))));
+        if (seenLines.has(sig)) return false;
+        seenLines.add(sig);
+        return true;
+      });
     if (!pts.length && !lns.length) { el.hidden = true; return; }
     el.hidden = false;
     ensureMap();
@@ -538,9 +546,14 @@ if (typeof document !== 'undefined') {
         fillOpacity: 0.85, weight: 2
       }).bindPopup(`<strong>${p.label}</strong><br>${p.info || ''}`).addTo(markersLayer);
     });
-    if (bounds.length === 1) map.setView(bounds[0], 6);
-    else map.fitBounds(bounds, { padding: [40, 40] });
-    setTimeout(() => map.invalidateSize(), 50);
+    try {
+      if (bounds.length === 1) map.setView(bounds[0], 6);
+      else if (fit) map.fitBounds(L.latLngBounds(bounds), { padding: [40, 40], maxZoom: 9 });
+    } catch (e) {
+      map.setView([46.6, 2.4], 5.5); // vue France en cas de bounds invalide
+    }
+    map.invalidateSize();
+    setTimeout(() => map.invalidateSize(), 250);
   }
 
   /* ---------- UI ---------- */
@@ -563,6 +576,39 @@ if (typeof document !== 'undefined') {
     const det = row.querySelector('.train-details');
     if (det) det.hidden = !det.hidden;
   });
+
+  /* ---------- Blagues & jeux de mots (transitions seulement, jamais dans les résultats) ---------- */
+  const LOADING_JOKES = [
+    '⏳ Interrogation des données SNCF…',
+    '🚂 Le TGV des données fonce à 300 km/h…',
+    '🎫 Le contrôleur compte les places libres une par une…',
+    '🛤️ On vérifie que la voie est libre près de Châteauroux…',
+    '🚉 Annonce en gare : « les résultats arriveront quai 3 »…',
+    '🐌 Même le TER met la main à la pâte…',
+    '☕ Le conducteur finit son café, deux secondes…',
+    '🗺️ On déplie la carte de la France entière…',
+    '⏱️ Correspondance assurée en 5 minutes chrono avec l’API…',
+    '🧭 Le GPS réapprend la différence entre Montparnasse et Vaugirard…',
+    '🔎 On regarde sous les sièges s’il reste des places…',
+    '📢 « Mesdames et messieurs, votre recherche arrive en gare »…',
+    '🎟️ Les places sont au frais dans la voiture-restaurant…',
+    '🚦 Le signal est au vert, la requête part…'
+  ];
+  let lastJokeIdx = -1;
+  function randomJoke() {
+    if (LOADING_JOKES.length < 2) return LOADING_JOKES[0];
+    let i; do { i = Math.floor(Math.random() * LOADING_JOKES.length); } while (i === lastJokeIdx);
+    lastJokeIdx = i;
+    return LOADING_JOKES[i];
+  }
+  const EMPTY_QUIPS = [
+    'Les places sont parties plus vite qu’un TGV sans arrêt.',
+    'C’est complet — même le bar de la voiture-restaurant a été vidé.',
+    'Quelqu’un a réservé avant toi. Un rival, probablement.',
+    'Plein comme une rame de métro à 18h, ce train.',
+    'Le hasard fait bien les choses… mais pas aujourd’hui.'
+  ];
+  function randomQuip() { return EMPTY_QUIPS[Math.floor(Math.random() * EMPTY_QUIPS.length)]; }
 
   function setStatus(msg, isError) {
     const el = $('#status');
@@ -747,7 +793,7 @@ if (typeof document !== 'undefined') {
   async function doSearch(mode, params) {
     const date = params.date;
     try {
-      setStatus('⏳ Interrogation des données SNCF…');
+      setStatus(randomJoke());
       const allTrains = await fetchDay(date);
       // Enrichit le pool de gares + reconstruit l'index villes si besoin
       let stationsChanged = false;
@@ -763,7 +809,7 @@ if (typeof document !== 'undefined') {
         $('#results').innerHTML = '';
         setStatus(allTrains.length && axeFilter
           ? `Aucun train « ${escapeHtml(axeFilter)} » réservable le ${fmtDateFR(date)} (il y a ${allTrains.length} places sur d'autres types de trains — change de filtre).`
-          : `Aucune place Max Jeunes trouvée pour le <strong>${fmtDateFR(date)}</strong>. Soit tout est complet, soit la date est hors fenêtre de réservation (${BOOKING_WINDOW_DAYS} jours).`, true);
+          : `Aucune place Max Jeunes trouvée pour le <strong>${fmtDateFR(date)}</strong>. Soit tout est complet, soit la date est hors fenêtre de réservation (${BOOKING_WINDOW_DAYS} jours).<br><small>${randomQuip()}</small>`, true);
         return;
       }
       const filterTag = axeFilter ? ` · filtre : <strong>${escapeHtml(axeFilter)}</strong>` : '';
@@ -781,12 +827,12 @@ if (typeof document !== 'undefined') {
         }
         setStatus(`✅ <strong>${trains.length}</strong> trains réservables le ${fmtDateFR(date)} — destinations depuis <strong>${escapeHtml(prettyStation(params.station))}</strong>${filterTag} :`);
         html = renderGroups('🎯 Depuis ' + escapeHtml(prettyStation(params.station)), groups, params.station, date);
-        const originCoord = getKnownCoord(params.station);
+        const originCoord = coordForLabel(params.station);
         points.push({ coord: originCoord, label: prettyStation(params.station), info: 'Départ', color: '#2563eb', major: true });
         groups.forEach(g => {
-          const c = getKnownCoord(g.station);
+          const c = coordForLabel(g.station);
           points.push({ coord: c, label: prettyStation(g.station), info: `${g.trains.length} train(s) TGVmax` });
-          if (originCoord && c) lines.push({ coords: [originCoord, c] });
+          if (originCoord && c && lines.length < 60) lines.push({ coords: [originCoord, c] });
         });
       }
 
@@ -799,12 +845,12 @@ if (typeof document !== 'undefined') {
         }
         setStatus(`✅ <strong>${trains.length}</strong> trains réservables le ${fmtDateFR(date)} — origines pour arriver à <strong>${escapeHtml(prettyStation(params.station))}</strong>${filterTag} :`);
         html = renderGroups('🔄 Vers ' + escapeHtml(prettyStation(params.station)), groups, params.station, date);
-        const destCoord = getKnownCoord(params.station);
+        const destCoord = coordForLabel(params.station);
         points.push({ coord: destCoord, label: prettyStation(params.station), info: 'Arrivée', color: '#2563eb', major: true });
         groups.forEach(g => {
-          const c = getKnownCoord(g.station);
+          const c = coordForLabel(g.station);
           points.push({ coord: c, label: prettyStation(g.station), info: `${g.trains.length} train(s) TGVmax` });
-          if (destCoord && c) lines.push({ coords: [c, destCoord] });
+          if (destCoord && c && lines.length < 60) lines.push({ coords: [c, destCoord] });
         });
       }
 
@@ -830,15 +876,15 @@ if (typeof document !== 'undefined') {
         for (const c of Object.keys(byHops).sort((a, b) => a - b)) {
           html += renderSplit(byHops[c], Number(c), date);
         }
-        points.push({ coord: getKnownCoord(params.from), label: prettyStation(params.from), info: 'Départ', color: '#2563eb', major: true });
-        points.push({ coord: getKnownCoord(params.to), label: prettyStation(params.to), info: 'Arrivée', color: '#0e9f6e', major: true });
+        points.push({ coord: coordForLabel(params.from), label: prettyStation(params.from), info: 'Départ', color: '#2563eb', major: true });
+        points.push({ coord: coordForLabel(params.to), label: prettyStation(params.to), info: 'Arrivée', color: '#0e9f6e', major: true });
         const hubCount = {};
         itins.slice(0, 15).forEach(it => it.hubs.forEach(hh => { hubCount[hh] = (hubCount[hh] || 0) + 1; }));
         Object.entries(hubCount).slice(0, 20).forEach(([hh, n]) =>
           points.push({ coord: getKnownCoord(hh), label: prettyStation(hh), info: `${n} itinéraire(s) via cette gare`, color: '#a1006b' }));
         // Une ligne par itinéraire (chaîne complète départ → hubs → arrivée)
         itins.slice(0, 8).forEach(it => {
-          const chain = [params.from, ...it.hubs, params.to].map(getKnownCoord);
+          const chain = [params.from, ...it.hubs, params.to].map(coordForLabel);
           if (chain.every(Boolean)) lines.push({ coords: chain, weight: 2.5 });
         });
       }
@@ -852,14 +898,31 @@ if (typeof document !== 'undefined') {
     }
   }
 
+  /** Coordonnée d'une gare OU d'un libellé ville (« X (toutes gares) » → centroïde du groupe) */
+  function coordForLabel(label) {
+    const key = norm(label);
+    if (COORDS[key]) return COORDS[key];
+    if (geoCache[key]) return geoCache[key];
+    if (cityIndex && cityIndex.has(key)) {
+      const coords = cityIndex.get(key).stations.map(s => COORDS[norm(s)]).filter(Boolean);
+      if (coords.length) {
+        return [
+          coords.reduce((a, c) => a + c[0], 0) / coords.length,
+          coords.reduce((a, c) => a + c[1], 0) / coords.length
+        ];
+      }
+    }
+    return getKnownCoord(label); // géocodage différé éventuel (vraie gare inconnue)
+  }
+
   function getKnownCoord(station) {
     const key = norm(station);
     if (COORDS[key]) return COORDS[key];
     if (geoCache[key]) return geoCache[key];
-    // géocodage en tâche de fond : re-trace la carte quand la coordonnée arrive
+    // géocodage en tâche de fond : re-trace la carte SANS recadrer (l'utilisateur regarde)
     getCoord(station, () => {
       const r = window.__lastRender;
-      if (r && (r.points.length || r.lines.length)) plotPoints(r.points, r.lines);
+      if (r && (r.points.length || r.lines.length)) plotPoints(r.points, r.lines, { fit: false });
     });
     return null;
   }
