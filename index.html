@@ -7,6 +7,17 @@
   <meta name="description" content="Trouve les places de l'abonnement Max Jeunes (ex-TGVmax) ouvertes à la réservation : TGV INOUI, OUIGO, Intercités de jour et de nuit. Depuis une gare, vers une destination, ou en itinéraire à correspondances. 100 % gratuit, sans compte, données open data SNCF.">
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#a1006b">
+  <script>
+    /* Thème appliqué AVANT le premier paint (anti-flash). Préférence mémorisée,
+       sinon suit le réglage système (mode auto). */
+    (function () {
+      try {
+        var pref = localStorage.getItem('tgvmax_radar_theme_v1') || 'auto';
+        var sys = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', pref === 'auto' ? sys : pref);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap">
@@ -15,6 +26,7 @@
   <link rel="icon" href="icon.svg">
 </head>
 <body>
+  <button type="button" id="theme-btn" class="theme-btn" title="Passer en thème sombre" aria-label="Basculer le thème clair ou sombre">🌙</button>
   <header class="hero">
     <h1>🚄 TGVmax&nbsp;Radar</h1>
     <p class="tagline">Les places <strong>Max Jeunes</strong> ouvertes à la réservation, sur une carte.<br>
@@ -92,6 +104,7 @@
           <input type="date" name="date" required>
         </label>
         <div class="form-actions">
+          <button type="button" class="swap-btn swap-mode-btn" data-swap="mode" title="Inverser : chercher plutôt les arrivées à cette gare" aria-label="Inverser départ et arrivée">⇄</button>
           <button type="button" class="star-btn" title="Ajouter ce trajet aux favoris">⭐</button>
           <button type="submit" class="submit-btn">Rechercher</button>
         </div>
@@ -107,6 +120,7 @@
           <input type="date" name="date" required>
         </label>
         <div class="form-actions">
+          <button type="button" class="swap-btn swap-mode-btn" data-swap="mode" title="Inverser : chercher plutôt les départs depuis cette gare" aria-label="Inverser départ et arrivée">⇄</button>
           <button type="button" class="star-btn" title="Ajouter ce trajet aux favoris">⭐</button>
           <button type="submit" class="submit-btn">Rechercher</button>
         </div>
@@ -118,6 +132,7 @@
         <label class="field">Départ
           <div class="ac-wrap"><input type="text" name="from" placeholder="Ex : Paris" autocomplete="off" required></div>
         </label>
+        <button type="button" class="swap-btn" data-swap="from-to" title="Inverser départ et arrivée" aria-label="Inverser départ et arrivée">⇄</button>
         <label class="field">Arrivée
           <div class="ac-wrap"><input type="text" name="to" placeholder="Ex : Nice" autocomplete="off" required></div>
         </label>
@@ -166,6 +181,7 @@
           <label class="field">Départ
             <div class="ac-wrap"><input type="text" name="from" placeholder="Ex : Paris" autocomplete="off" required></div>
           </label>
+          <button type="button" class="swap-btn" data-swap="from-to" title="Inverser départ et arrivée" aria-label="Inverser départ et arrivée">⇄</button>
           <label class="field">Arrivée
             <div class="ac-wrap"><input type="text" name="to" placeholder="Ex : Nice" autocomplete="off" required></div>
           </label>

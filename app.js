@@ -749,6 +749,64 @@ if (typeof document !== 'undefined') {
     });
   });
 
+  /* ---------- Bouton thème (clair / sombre, mémorisé) ---------- */
+  const THEME_KEY = 'tgvmax_radar_theme_v1';
+  const THEME_COLORS = { light: '#a1006b', dark: '#0f131d' };
+  function effectiveTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  }
+  function applyTheme(theme, persist) {
+    document.documentElement.setAttribute('data-theme', theme);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', THEME_COLORS[theme]);
+    const tbtn = document.getElementById('theme-btn');
+    if (tbtn) {
+      tbtn.textContent = theme === 'dark' ? '☀️' : '🌙';
+      tbtn.title = theme === 'dark' ? 'Passer en thème clair' : 'Passer en thème sombre';
+    }
+    if (persist) { try { localStorage.setItem(THEME_KEY, theme); } catch (e) {} }
+  }
+  applyTheme(effectiveTheme(), false); // sync icône + couleur navigateur avec l'état posé par le script anti-flash du <head>
+  $('#theme-btn').addEventListener('click', () => {
+    applyTheme(effectiveTheme() === 'dark' ? 'light' : 'dark', true);
+  });
+  // Mode auto (aucune préférence mémorisée) : suit les changements du système en direct
+  try {
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ev => {
+      let pref = 'auto';
+      try { pref = localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) {}
+      if (pref === 'auto') applyTheme(ev.matches ? 'dark' : 'light', false);
+    });
+  } catch (e) {}
+
+  /* ---------- Bouton d'échange départ ⇄ arrivée ---------- */
+  document.querySelectorAll('.swap-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const form = btn.closest('form');
+      if (!form) return;
+      // Onglets « Depuis une gare » / « Vers une destination » : bascule du mode
+      // en conservant la gare ET la date saisies.
+      if (btn.dataset.swap === 'mode') {
+        const targetMode = form.dataset.mode === 'classic' ? 'reverse' : 'classic';
+        const target = document.querySelector('.search-form[data-mode="' + targetMode + '"]');
+        if (!target) return;
+        target.querySelector('[name=station]').value = form.querySelector('[name=station]').value;
+        target.querySelector('[name=date]').value = form.querySelector('[name=date]').value;
+        document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === targetMode));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + targetMode));
+        target.querySelector('[name=station]').focus();
+        return;
+      }
+      // Onglets « Avec correspondances » et « Suivi » : échange simple des deux champs
+      const a = form.querySelector('[name=from]');
+      const b = form.querySelector('[name=to]');
+      if (!a || !b) return;
+      const tmp = a.value;
+      a.value = b.value;
+      b.value = tmp;
+    });
+  });
+
   /* ---------- Champs date ---------- */
   document.querySelectorAll('input[type="date"]').forEach(inp => {
     inp.min = todayISO();

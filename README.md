@@ -8,6 +8,8 @@ Outil local & gratuit pour trouver les places **TGVmax** ouvertes à la réserva
 - 🔄 **Vers une destination** : toutes les origines d'où on peut arriver.
 - ✂️ **Itinéraires à correspondances** : si aucun direct n'est dispo, cherche automatiquement des chaînes de places TGVmax — **1 à 4 correspondances**, attente réglable par étape (5 min → 8 h), même journée, sans repasser deux fois par la même gare. Les meilleurs itinéraires sont listés par nombre de correspondances.
 - 🗺️ Carte interactive (Leaflet + OpenStreetMap/CARTO).
+- ⇄ **Échange départ / arrivée** : inverse le sens du trajet en un clic, dans tous les modes de recherche.
+- 🌙 **Mode sombre** : bouton de bascule clair/sombre en haut à droite — préférence mémorisée, sinon suit le réglage du système (sans flash au chargement).
 - ⚡ Une seule requête réseau par date (filtre `od_happy_card=OUI` fait côté API — plus léger que le site original).
 
 ## Source de données
