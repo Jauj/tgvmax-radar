@@ -482,7 +482,7 @@ footer code { background: var(--card); border: 1px solid var(--border); border-r
   .hero { padding: 24px 14px 4px; }
   .hero h1 { font-size: 1.45rem; }
   .tagline { font-size: .93rem; }
-  .tabs { max-width: calc(100% - 28px); }
+  .tabs { width: auto; max-width: 100%; flex-wrap: wrap; justify-content: center; overflow: visible; }
   .tab { padding: 9px 13px; font-size: .85rem; }
   main { padding: 12px 12px 36px; }
   .search-form { flex-direction: column; align-items: stretch; gap: 11px; padding: 14px; }
