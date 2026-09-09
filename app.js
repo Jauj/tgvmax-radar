@@ -945,19 +945,36 @@ if (typeof document !== 'undefined') {
       $('#results').innerHTML = html;
       plotPoints(points, lines);
       $('#status').insertAdjacentHTML('beforeend', ' <button type="button" class="share-btn" title="Copier un lien qui relance cette recherche à l’identique">🔗 Partager cette recherche</button>');
-      window.scrollTo({ top: 260, behavior: 'smooth' });
+      const statusEl = document.getElementById('status');
+      if (statusEl) statusEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       setStatus('❌ ' + escapeHtml(err.message || err), true);
     }
   }
 
+  /** Retire un éventuel suffixe « (toutes gares) » / « (toutes les gares) » :
+   *  « AVIGNON (toutes gares) » → « AVIGNON ». Ces libellés ville ne doivent
+   *  JAMAIS partir tels quels vers l'index ou le géocodage. */
+  function stripAllStationsSuffix(label) {
+    const raw = String(label || '').trim();
+    const m = raw.match(/\s*\((?:toutes les gares|toutes gares)\)\s*$/i);
+    return m ? raw.slice(0, m.index).trim() : raw;
+  }
+
   /** Coordonnée d'une gare OU d'un libellé ville (« X (toutes gares) » → centroïde du groupe) */
   function coordForLabel(label) {
-    const key = norm(label);
-    if (COORDS[key]) return COORDS[key];
-    if (geoCache[key]) return geoCache[key];
-    if (cityIndex && cityIndex.has(key)) {
-      const coords = cityIndex.get(key).stations.map(s => COORDS[norm(s)]).filter(Boolean);
+    const cityLabel = stripAllStationsSuffix(label);
+    const key = norm(cityLabel);
+    const candidates = key ? [key, key + ' intramuros'] : []; // « paris » → « paris intramuros »
+    // 1) Coordonnée directe — gare exacte, ou ville « X (intramuros) » (Paris/Lyon/Lille)
+    for (const k of candidates) {
+      if (COORDS[k]) return COORDS[k];
+      if (geoCache[k]) return geoCache[k];
+    }
+    // 2) Groupe ville (CITY_GROUPS) → centroïde = moyenne des gares du groupe
+    const idxKey = candidates.find(k => cityIndex && cityIndex.has(k));
+    if (idxKey) {
+      const coords = cityIndex.get(idxKey).stations.map(s => COORDS[norm(s)]).filter(Boolean);
       if (coords.length) {
         return [
           coords.reduce((a, c) => a + c[0], 0) / coords.length,
@@ -965,15 +982,16 @@ if (typeof document !== 'undefined') {
         ];
       }
     }
-    return getKnownCoord(label); // géocodage différé éventuel (vraie gare inconnue)
+    return getKnownCoord(cityLabel); // géocodage différé éventuel (vraie gare inconnue)
   }
 
   function getKnownCoord(station) {
-    const key = norm(station);
+    const clean = stripAllStationsSuffix(station); // jamais de géocodage Nominatim sur « X (toutes gares) »
+    const key = norm(clean);
     if (COORDS[key]) return COORDS[key];
     if (geoCache[key]) return geoCache[key];
     // géocodage en tâche de fond : re-trace la carte SANS recadrer (l'utilisateur regarde)
-    getCoord(station, () => {
+    getCoord(clean, () => {
       const r = window.__lastRender;
       if (r && (r.points.length || r.lines.length)) plotPoints(r.points, r.lines, { fit: false });
     });
@@ -1057,7 +1075,7 @@ if (typeof document !== 'undefined') {
   }
 
   /* ---------- Favoris (localStorage) ---------- */
-  const FAVS_KEY = '***';
+  const FAVS_KEY = 'tgvmax_radar_favs_v1';
   function getFavs() { try { return JSON.parse(localStorage.getItem(FAVS_KEY) || '[]'); } catch { return []; } }
   function saveFavs(f) { try { localStorage.setItem(FAVS_KEY, JSON.stringify(f.slice(0, 10))); } catch (e) {} renderFavs(); }
   function favSignature(p) { return `${p.mode}|${(p.station || p.from || '').toUpperCase()}|${(p.to || '').toUpperCase()}`; }
@@ -1103,7 +1121,7 @@ if (typeof document !== 'undefined') {
   });
 
   /* ---------- Historique des recherches (8 dernières) ---------- */
-  const HIST_KEY = '***';
+  const HIST_KEY = 'tgvmax_radar_history_v1';
   function getHistory() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch { return []; } }
   function pushHistory(mode, params) {
     try {
@@ -1180,11 +1198,46 @@ if (typeof document !== 'undefined') {
     });
   });
 
+  /* ---------- Lien partagé : pré-remplissage depuis l'URL au chargement ---------- */
+  function applySharedSearch() {
+    let q;
+    try { q = new URLSearchParams(location.search); } catch (e) { return; }
+    if (![...q.keys()].length) return;
+    const mode = (q.get('mode') || '').toLowerCase();
+    if (!['classic', 'reverse', 'split'].includes(mode)) return;
+    const form = document.querySelector('.search-form[data-mode="' + mode + '"]');
+    if (!form) return;
+    // Bascule sur le bon onglet
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === mode));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + mode));
+    // Remplit le formulaire
+    const station = (q.get('station') || '').trim();
+    const from = (q.get('from') || '').trim();
+    const to = (q.get('to') || '').trim();
+    let date = q.get('date') || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < todayISO()) date = todayISO();
+    if (mode === 'split') {
+      form.querySelector('[name=from]').value = from;
+      form.querySelector('[name=to]').value = to;
+      form.querySelector('[name=hops]').value = String(Math.max(1, Math.min(4, Number(q.get('hops')) || 1)));
+      form.querySelector('[name=maxwait]').value = String(Number(q.get('maxwait')) || 360);
+    } else {
+      form.querySelector('[name=station]').value = station;
+    }
+    form.querySelector('[name=date]').value = date;
+    // Nettoie l'URL (le bouton Partager régénère un lien propre si besoin)
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    // Relance la recherche si la saisie est plausible
+    const fillable = mode === 'split' ? (from && to) : station;
+    if (fillable) form.requestSubmit();
+  }
+  applySharedSearch();
+
   /* ---------- Suivi d'évolution des places (Supabase, niveau 2) ---------- */
   const SB_CFG = window.TGV_SUPABASE || {};
   const sbReady = !!(SB_CFG.url && SB_CFG.anonKey && window.supabase);
   const sb = sbReady ? window.supabase.createClient(SB_CFG.url, SB_CFG.anonKey) : null;
-  const WATCH_KEY = '***';
+  const WATCH_KEY = 'tgvmax_radar_watched_v1';
 
   function updateSuiviUI() {
     const setup = document.getElementById('suivi-setup');
@@ -1294,7 +1347,7 @@ if (typeof document !== 'undefined') {
   // Auto-instantanés des trajets suivis au chargement (1× par 12 h, max 3 par visite)
   (async function autoSnapshots() {
     if (!sb) return;
-    const THROTTLE_KEY = '***';
+    const THROTTLE_KEY = 'tgvmax_radar_throttle_v1';
     let last = {};
     try { last = JSON.parse(localStorage.getItem(THROTTLE_KEY) || '{}'); } catch (e) {}
     const watched = getWatched().slice(0, 3);
