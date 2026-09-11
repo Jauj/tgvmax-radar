@@ -129,11 +129,106 @@ function expandStationLabel(label, cityIndex) {
   return new Set([n]);
 }
 
+/* ---------------- HISTORIQUE DES DISPONIBILITÉS (purs, testables) ----------------
+   Modèle : par tronçon, un relevé par jour => { ts, perDate: { date_voyage: nb_directs } }.
+   Sources fusionnées : localStorage (visites), data/history/*.json (robot GitHub Actions
+   nocturne), Supabase (optionnel). */
+const HIST_MAX_DAYS = 120;      // relevés conservés par tronçon
+const HIST_MAX_SEGS = 32;       // tronçons conservés
+const HIST_WINDOW_PERDATE = 45; // dates de voyage retenues par relevé
+/** Clé stable d'un tronçon : norm(A) + '>' + norm(B) ('>' ne peut pas sortir de norm) */
+function segKeyOf(from, to) { return norm(from) + '>' + norm(to); }
+/** Nom de fichier dépôt : « paris-intramuros__lyon-intramuros.json » */
+function slugOf(from, to) {
+  const part = s => norm(s).replace(/\s+/g, '-') || 'x';
+  return part(from) + '__' + part(to);
+}
+/** Date locale -> ISO (YYYY-MM-DD) */
+function dateToISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+/** Écart en jours entre deux dates ISO (100 % UTC) */
+function dayDiff(a, b) {
+  return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
+}
+/** Plus beau maximum d'axe Y (1/2/5 × 10^n) */
+function niceMax(v) {
+  v = Math.max(1, Number(v) || 1);
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 5, 10]) if (v <= m * p) return m * p;
+  return 10 * p;
+}
+/** Fusionne un relevé { ts, perDate } dans days[jour] : le plus récent gagne ;
+ *  le plus ancien ne fait que compléter les dates de voyage absentes. */
+function histMergeDay(days, day, rec) {
+  if (!days || !day || !rec) return days || {};
+  const cur = days[day];
+  const recTs = Number(rec.ts) || 0;
+  if (!cur) {
+    days[day] = { ts: recTs, perDate: Object.assign({}, rec.perDate || {}) };
+  } else if (recTs >= (Number(cur.ts) || 0)) {
+    days[day] = { ts: Math.max(recTs, Number(cur.ts) || 0), perDate: Object.assign({}, cur.perDate, rec.perDate || {}) };
+  } else {
+    for (const [t, n] of Object.entries(rec.perDate || {})) if (!(t in cur.perDate)) cur.perDate[t] = n;
+  }
+  return days;
+}
+/** Dernier ts connu d'un tronçon (pour prioriser les tronçons actifs) */
+function segLastTs(seg) {
+  let m = 0;
+  for (const r of Object.values((seg && seg.days) || {})) if ((Number(r.ts) || 0) > m) m = Number(r.ts) || 0;
+  return m;
+}
+/** Nettoie : relevés trop vieux, dates de voyage hors fenêtre, trop de tronçons */
+function histPrune(hist, todayIso) {
+  if (!hist || !hist.segs) return hist;
+  const minDay = addDaysISO(todayIso, -HIST_MAX_DAYS);
+  const entries = Object.entries(hist.segs)
+    .sort((a, b) => segLastTs(b[1]) - segLastTs(a[1]))
+    .slice(0, HIST_MAX_SEGS);
+  const segs = {};
+  for (const [k, seg] of entries) {
+    const days = {};
+    for (const [d, rec] of Object.entries(seg.days || {})) {
+      if (d < minDay) continue;
+      const perDate = {};
+      for (const [t, n] of Object.entries(rec.perDate || {})) {
+        if (t >= d && dayDiff(d, t) <= HIST_WINDOW_PERDATE) perDate[t] = n;
+      }
+      if (Object.keys(perDate).length) days[d] = { ts: Number(rec.ts) || 0, perDate };
+    }
+    if (Object.keys(days).length) segs[k] = { from: seg.from || k.split('>')[0], to: seg.to || k.split('>')[1], days };
+  }
+  hist.segs = segs;
+  return hist;
+}
+/** Relevés triés par jour, avec total par relevé */
+function histSeries(days) {
+  return Object.entries(days || {})
+    .map(([day, rec]) => ({
+      day,
+      ts: Number(rec.ts) || 0,
+      perDate: rec.perDate || {},
+      total: Object.values(rec.perDate || {}).reduce((a, n) => a + (Number(n) || 0), 0)
+    }))
+    .sort((a, b) => (a.day < b.day ? -1 : 1));
+}
+/** Classe de couleur heatmap selon le nombre de places */
+function hmClass(n) {
+  if (n == null || n === '') return 'hm-x';
+  if (n <= 0) return 'hm-0';
+  if (n <= 2) return 'hm-1';
+  if (n <= 5) return 'hm-2';
+  if (n <= 9) return 'hm-3';
+  return 'hm-4';
+}
+
 /* ---------------- API SNCF ---------------- */
 const dayCache = new Map();
 async function fetchDay(dateISO) {
   if (dayCache.has(dateISO)) return dayCache.get(dateISO);
   const url = `${API_BASE}?dataset=${DATASET}&rows=10000`
+    + `&select=${encodeURIComponent('origine,destination,heure_depart,heure_arrivee,axe,train_no,origine_iata,destination_iata')}`
     + `&refine.date=${encodeURIComponent(dateISO)}`
     + `&refine.od_happy_card=OUI`;
   const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
@@ -357,7 +452,9 @@ if (typeof module !== 'undefined' && module.exports) {
     norm, parseHM, arrivalMinutes, todayISO, addDaysISO, fmtDateFR,
     fetchDay, fetchStationNames,
     searchClassic, searchReverse, searchDirect, searchMultiSplit, fmtDur, axeCategory, AXE_CATEGORIES,
-    buildCityIndex, expandStationLabel, inWindow, nextSaturdayISO
+    buildCityIndex, expandStationLabel, inWindow, nextSaturdayISO,
+    segKeyOf, slugOf, dateToISO, dayDiff, niceMax, histMergeDay, histPrune, histSeries, hmClass, segLastTs,
+    HIST_MAX_DAYS, HIST_MAX_SEGS, HIST_WINDOW_PERDATE
   };
 }
 
@@ -1291,18 +1388,30 @@ if (typeof document !== 'undefined') {
   }
   applySharedSearch();
 
-  /* ---------- Suivi d'évolution des places (Supabase, niveau 2) ---------- */
+  /* ============================================================
+     SUIVI & HISTORIQUE DES DISPONIBILITÉS — 3 sources fusionnées :
+     1) localStorage  (chaque visite / instantané manuel)
+     2) data/history/*.json  (relevé nocturne automatique : GitHub Actions)
+     3) Supabase  (sauvegarde en ligne optionnelle, rétro-compatible)
+     Vues : 📈 courbes multi-séries · 🗓 calendrier (relevés × dates) · 📋 données.
+     ============================================================ */
   const SB_CFG = window.TGV_SUPABASE || {};
   const sbReady = !!(SB_CFG.url && SB_CFG.anonKey && window.supabase);
   const sb = sbReady ? window.supabase.createClient(SB_CFG.url, SB_CFG.anonKey) : null;
   const WATCH_KEY = 'tgvmax_radar_watched_v1';
+  const HISTO_KEY = 'tgvmax_radar_hist_v1';
+  const REPO_NEW_FILE_URL = 'https://github.com/Jauj/tgvmax-radar/new/main?filename=data/watched.json';
+  const SERIE_COLORS = ['#a1006b', '#2563eb', '#0e9f6e', '#d97706', '#7c3aed', '#0891b2', '#dc2626', '#65a30d'];
+  const fmtDayShort = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short' });
+  const fmtDayFull = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
 
   function updateSuiviUI() {
     const setup = document.getElementById('suivi-setup');
     const app = document.getElementById('suivi-app');
-    if (!setup || !app) return;
-    setup.hidden = sbReady;
-    app.hidden = !sbReady;
+    if (app) app.hidden = false;
+    if (setup && sbReady) {
+      setup.innerHTML = '<p class="hint">☁️ <strong>Sauvegarde Supabase active</strong> — chaque instantané est aussi copié en ligne et fusionné dans les vues ci-dessous.</p>';
+    }
   }
   updateSuiviUI();
 
@@ -1311,83 +1420,461 @@ if (typeof document !== 'undefined') {
   }
   function saveWatched(w) { try { localStorage.setItem(WATCH_KEY, JSON.stringify(w.slice(0, 8))); } catch (e) {} }
 
-  /** Compte les places d'un trajet et enregistre un instantané dans Supabase */
+  /* ---------- Stockage local de l'historique ---------- */
+  let HIST = (function () {
+    try {
+      const j = JSON.parse(localStorage.getItem(HISTO_KEY) || '{}');
+      if (j && j.segs && typeof j.segs === 'object') return j;
+    } catch (e) {}
+    return { v: 1, segs: {} };
+  })();
+  let histSaveTimer = null;
+  function histSave() {
+    clearTimeout(histSaveTimer);
+    histSaveTimer = setTimeout(() => {
+      try { histPrune(HIST, todayISO()); localStorage.setItem(HISTO_KEY, JSON.stringify(HIST)); } catch (e) {}
+    }, 200);
+  }
+  /** Enregistre (ou met à jour) le relevé du jour pour un tronçon */
+  function histRecord(from, to, forDate, count) {
+    if (!from || !to || !forDate) return;
+    const key = segKeyOf(from, to);
+    const seg = HIST.segs[key] || (HIST.segs[key] = { from, to, days: {} });
+    seg.from = from; seg.to = to;
+    histMergeDay(seg.days, todayISO(), { ts: Date.now(), perDate: { [forDate]: count } });
+    histPrune(HIST, todayISO());
+    histSave();
+  }
+  function histExportJson() { return JSON.stringify({ v: 1, exported: new Date().toISOString(), segs: HIST.segs }, null, 1); }
+  function histImportJson(json) {
+    if (!json || typeof json !== 'object' || !json.segs || typeof json.segs !== 'object') throw new Error('Fichier non reconnu (structure attendue : { segs: … })');
+    for (const [k, seg] of Object.entries(json.segs)) {
+      if (!seg || typeof seg !== 'object' || !seg.days) continue;
+      const cur = HIST.segs[k] || (HIST.segs[k] = { from: seg.from || k.split('>')[0] || '?', to: seg.to || k.split('>')[1] || '?', days: {} });
+      for (const [d, rec] of Object.entries(seg.days)) histMergeDay(cur.days, d, rec);
+    }
+    histPrune(HIST, todayISO());
+    histSave();
+  }
+
+  /* ---------- Source 2 : relevés nocturnes du dépôt ---------- */
+  let REMOTE_META = { segments: [], lastRun: null };
+  const remoteCache = new Map();   // segKey -> { days, at }
+  const mergedCache = new Map();   // segKey -> { days, at } (fusion des 3 sources)
+  const REMOTE_TTL = 5 * 60 * 1000;
+
+  async function loadRemoteMeta() {
+    try {
+      const r = await fetch('data/history/_meta.json?_=' + Date.now(), { headers: { Accept: 'application/json' } });
+      if (r.ok) {
+        const j = await r.json();
+        REMOTE_META = { segments: Array.isArray(j.segments) ? j.segments : [], lastRun: j.lastRun || null };
+      }
+    } catch (e) {}
+  }
+
+  async function fetchRemoteDays(from, to) {
+    const key = segKeyOf(from, to);
+    const c = remoteCache.get(key);
+    if (c && Date.now() - c.at < REMOTE_TTL) return c.days;
+    try {
+      const r = await fetch('data/history/' + slugOf(from, to) + '.json?_=' + Date.now(), { headers: { Accept: 'application/json' } });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const days = (j && j.days) || {};
+      remoteCache.set(key, { days, at: Date.now() });
+      return days;
+    } catch (e) { return null; }
+  }
+
+  /* ---------- Source 3 : Supabase (optionnel, rétro-compatible) ---------- */
+  async function fetchSupaDays(from, to) {
+    if (!sb) return null;
+    try {
+      const { data, error } = await sb.from('route_snapshots')
+        .select('captured_at, for_date, oui_count')
+        .eq('route_from', from).eq('route_to', to)
+        .order('captured_at', { ascending: true }).limit(2000);
+      if (error) return null;
+      const days = {};
+      for (const r of data || []) {
+        const d = new Date(r.captured_at);
+        histMergeDay(days, dateToISO(d), { ts: d.getTime(), perDate: { [r.for_date]: r.oui_count } });
+      }
+      return days;
+    } catch (e) { return null; }
+  }
+
+  /** Fusion des 3 sources (le local, plus frais, gagne les égalités) */
+  async function collectDays(from, to) {
+    const key = segKeyOf(from, to);
+    const c = mergedCache.get(key);
+    if (c && Date.now() - c.at < 60 * 1000) return c.days;
+    const [remote, supa] = await Promise.all([fetchRemoteDays(from, to), fetchSupaDays(from, to)]);
+    const days = {};
+    for (const src of [remote || {}, supa || {}, HIST.segs[key] ? HIST.segs[key].days : {}]) {
+      for (const [d, rec] of Object.entries(src || {})) histMergeDay(days, d, rec);
+    }
+    mergedCache.set(key, { days, at: Date.now() });
+    return days;
+  }
+
+  /* ---------- Instantané (local d'abord, Supabase en bonus) ---------- */
   async function takeSnapshot(from, to, forDate) {
     const trains = await fetchDay(forDate);
     const directs = searchDirect(trains, from, to, cityIndex);
     const itins = searchMultiSplit(trains, from, to, { maxHops: 4, maxConn: 360, cityIndex });
     const row = { route_from: from, route_to: to, for_date: forDate, oui_count: directs.length, itins_count: itins.length };
-    const { error } = await sb.from('route_snapshots').insert(row);
-    if (error) throw new Error('Supabase : ' + error.message);
+    histRecord(from, to, forDate, directs.length); // toujours, même sans Supabase
+    if (sb) {
+      try { await sb.from('route_snapshots').insert(row); } catch (e) {}
+    }
     return row;
   }
 
-  /** Courbe SVG sans dépendance : nombre de directs au fil des relevés */
-  function renderChart(container, series) {
-    if (!series.length) { container.innerHTML = '<p class="hint">Aucun instantané pour ce trajet encore — prends-en un !</p>'; return; }
-    const W = 640, H = 240, PAD = 40;
-    const maxY = Math.max(...series.map(s => s.y), 1);
-    const stepX = series.length > 1 ? (W - PAD * 2) / (series.length - 1) : 0;
-    const pt = i => [PAD + i * stepX, H - PAD - (series[i].y / maxY) * (H - PAD * 2)];
-    const path = series.map((s, i) => (i ? 'L' : 'M') + pt(i)[0].toFixed(1) + ' ' + pt(i)[1].toFixed(1)).join(' ');
-    const dots = series.map((s, i) => `<circle cx="${pt(i)[0].toFixed(1)}" cy="${pt(i)[1].toFixed(1)}" r="4" fill="#a1006b"><title>${escapeHtml(s.x)} : ${s.y} place(s)</title></circle>`).join('');
-    const gridY = [0, Math.round(maxY / 2), maxY].map(v => {
-      const y = H - PAD - (v / maxY) * (H - PAD * 2);
-      return `<line x1="${PAD}" y1="${y.toFixed(1)}" x2="${W - PAD}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="1"/><text x="6" y="${(y + 4).toFixed(1)}" font-size="11" fill="var(--muted)">${Math.round(v)}</text>`;
+  /* ---------- Moteur graphique SVG multi-séries (sans dépendance) ---------- */
+  function svgLinesChart(series) {
+    const allPts = [];
+    for (const s of series) for (const p of s.points) allPts.push({ d: p.d, y: Number(p.y) || 0 });
+    if (!allPts.length) return '';
+    const dMin = allPts.reduce((m, p) => (p.d < m ? p.d : m), allPts[0].d);
+    const dMax = allPts.reduce((m, p) => (p.d > m ? p.d : m), allPts[0].d);
+    const span = Math.max(1, dayDiff(dMin, dMax));
+    const yMax = niceMax(Math.max(1, ...allPts.map(p => p.y)));
+    const W = 680, H = 280, PL = 40, PR = 14, PT = 16, PB = 30;
+    const X = d => PL + (Math.max(0, Math.min(span, dayDiff(dMin, d))) / span) * (W - PL - PR);
+    const Y = v => H - PB - (v / yMax) * (H - PT - PB);
+    let grid = '';
+    for (let i = 0; i <= 4; i++) {
+      const v = Math.round(yMax * i / 4), y = Y(v).toFixed(1);
+      grid += `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`
+        + `<text x="${PL - 6}" y="${Number(y) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${v}</text>`;
+    }
+    let xTicks = '';
+    for (let i = 0; i <= 4; i++) {
+      const d = addDaysISO(dMin, Math.round(span * i / 4));
+      const anchor = i === 0 ? 'start' : (i === 4 ? 'end' : 'middle');
+      xTicks += `<text x="${X(d).toFixed(1)}" y="${H - 8}" font-size="10.5" text-anchor="${anchor}" fill="var(--muted)">${fmtDayShort.format(new Date(d + 'T00:00:00'))}</text>`;
+    }
+    const paths = series.map(s => {
+      const pts = s.points.slice().sort((a, b) => (a.d < b.d ? -1 : 1));
+      if (!pts.length) return '';
+      const line = pts.map((p, i) => (i ? 'L' : 'M') + X(p.d).toFixed(1) + ' ' + Y(p.y).toFixed(1)).join(' ');
+      const dots = pts.map(p =>
+        `<circle cx="${X(p.d).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="3.4" fill="${s.color}" stroke="var(--card)" stroke-width="1"><title>${p.d} : ${p.y} train(s)</title></circle>`).join('');
+      return `<path d="${line}" fill="none" stroke="${s.color}" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" opacity=".92"/>${dots}`;
     }).join('');
-    const labels = series.length > 1
-      ? `<text x="${PAD}" y="${H - 12}" font-size="11" fill="var(--muted)">${escapeHtml(series[0].x)}</text><text x="${W - PAD}" y="${H - 12}" font-size="11" fill="var(--muted)" text-anchor="end">${escapeHtml(series[series.length - 1].x)}</text>`
-      : '';
-    container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Évolution des places" style="width:100%;height:auto;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm)">${gridY}<path d="${path}" fill="none" stroke="#a1006b" stroke-width="2.5"/>${dots}${labels}</svg>`;
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Évolution du nombre de trains disponibles" style="width:100%;height:auto;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm)">${grid}${xTicks}${paths}</svg>`;
   }
 
-  async function renderSuiviHistory(from, to, forDate) {
-    const chart = document.getElementById('suivi-chart');
-    const table = document.getElementById('suivi-table');
-    const { data, error } = await sb.from('route_snapshots')
-      .select('captured_at, oui_count, itins_count')
-      .eq('route_from', from).eq('route_to', to).eq('for_date', forDate)
-      .order('captured_at', { ascending: true });
-    if (error) {
-      if (error.code === 'PGRST205') {
-        chart.innerHTML = `<div class="setup-box"><h2>⚠️ Table pas encore créée sur Supabase</h2><p>Un dernier pas : ouvre <strong>Supabase → SQL Editor → New query</strong>, colle le contenu du fichier <code>supabase-setup.sql</code> puis Run. Le SQL est aussi visible <a href="supabase-setup.sql" target="_blank" rel="noopener">ici</a>. Reviens ensuite sur cet onglet !</p></div>`;
-        table.innerHTML = '';
-        return;
+  function emptyHistHtml() {
+    return `<div class="setup-box"><h2>🚉 Aucun relevé pour ce tronçon</h2><p>Choisis un tronçon ci-dessus, une date, puis clique <strong>📸 Instantané</strong>. Reviens demain (ou laisse le snapshot automatique agir) : la courbe se dessine au fil des relevés.</p></div>`;
+  }
+
+  /* ---------- Vue calendrier : relevés (colonnes) × dates de voyage (lignes) ---------- */
+  function renderHeat(el, days) {
+    const today = todayISO();
+    const dayKeys = histSeries(days).map(s => s.day);
+    if (!dayKeys.length) { el.innerHTML = emptyHistHtml(); return; }
+    const tSet = new Set();
+    for (const d of dayKeys) for (const t of Object.keys(days[d].perDate || {})) {
+      if (t >= today && dayDiff(today, t) <= 31) tSet.add(t);
+    }
+    let travelDates = [...tSet].sort();
+    if (!travelDates.length) {
+      // historique ancien uniquement : dates de voyage les plus récentes
+      for (const d of dayKeys) for (const t of Object.keys(days[d].perDate || {})) tSet.add(t);
+      travelDates = [...tSet].sort().slice(-31);
+    }
+    if (!travelDates.length) { el.innerHTML = emptyHistHtml(); return; }
+    const head = dayKeys.map((d, i) =>
+      `<div class="hm-head${i % 2 ? '' : ' show'}" title="Relevé du ${d}">${d.slice(8, 10)}/${d.slice(5, 7)}</div>`).join('');
+    const rows = travelDates.map(t => {
+      const cells = dayKeys.map(d => {
+        const n = days[d].perDate[t];
+        const label = escapeHtml(fmtDayFull.format(new Date(t + 'T00:00:00')));
+        const title = n == null ? `${d} · ${label} : pas de relevé` : `${d} · ${label} : ${n} train(s) direct(s)`;
+        return `<div class="hm-cell ${hmClass(n)}" title="${escapeHtml(title)}">${n == null ? '' : n}</div>`;
+      }).join('');
+      return `<div class="hm-row"><div class="hm-label" title="${t}">${escapeHtml(fmtDayFull.format(new Date(t + 'T00:00:00')))}</div>${cells}</div>`;
+    }).join('');
+    el.innerHTML = `
+      <div class="hm-scroll">
+        <div class="hm-grid" style="grid-template-columns:max-content repeat(${dayKeys.length}, 27px)">
+          <div class="hm-head hm-corner"></div>${head}
+          ${rows}
+        </div>
+      </div>
+      <div class="hm-legend">Places directes :
+        <span class="hm-swatch hm-0"></span>0
+        <span class="hm-swatch hm-1"></span>1–2
+        <span class="hm-swatch hm-2"></span>3–5
+        <span class="hm-swatch hm-3"></span>6–9
+        <span class="hm-swatch hm-4"></span>10+
+        <span class="hm-swatch hm-x"></span>pas de relevé
+      </div>`;
+  }
+
+  /* ---------- Vue données : tableau croisé + exports ---------- */
+  function download(name, content, type) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([content], { type }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  function histCSV(segsDays) {
+    const rows = ['troncon;releve;date_voyage;trains_directs'];
+    for (const s of segsDays) {
+      const label = prettyStation(s.from) + ' -> ' + prettyStation(s.to);
+      for (const day of Object.keys(s.days).sort()) {
+        const pd = s.days[day].perDate || {};
+        for (const t of Object.keys(pd).sort()) rows.push([label, day, t, pd[t]].join(';'));
       }
-      chart.innerHTML = `<p class="hint">⚠️ ${escapeHtml(error.message)}</p>`;
-      table.innerHTML = '';
+    }
+    return '\ufeff' + rows.join('\n');
+  }
+  function renderDataTable(el, segsDays) {
+    if (!segsDays.length) { el.innerHTML = emptyHistHtml(); return; }
+    if (segsDays.length === 1) {
+      const s = segsDays[0];
+      const dayKeys = histSeries(s.days).map(x => x.day).reverse().slice(0, 60);
+      const today = todayISO();
+      const tSet = new Set();
+      for (const d of dayKeys) for (const t of Object.keys(s.days[d].perDate || {})) if (t >= today) tSet.add(t);
+      let travelDates = [...tSet].sort().slice(0, 14);
+      if (!travelDates.length) {
+        for (const d of dayKeys) for (const t of Object.keys(s.days[d].perDate || {})) tSet.add(t);
+        travelDates = [...tSet].sort().slice(0, 14);
+      }
+      if (!travelDates.length) { el.innerHTML = emptyHistHtml(); return; }
+      let html = '<div class="tbl-scroll"><table class="hist-table"><thead><tr><th>Relevé ↓ · voyage →</th>'
+        + travelDates.map(t => `<th title="${t}">${t.slice(8, 10)}/${t.slice(5, 7)}</th>`).join('') + '<th>Σ</th></tr></thead><tbody>';
+      for (const d of dayKeys) {
+        const pd = s.days[d].perDate || {};
+        let sum = 0;
+        const cells = travelDates.map(t => { const n = pd[t]; if (n != null) sum += Number(n) || 0; return `<td class="${hmClass(n == null ? '' : n)}">${n == null ? '·' : n}</td>`; }).join('');
+        html += `<tr><th>${d.slice(8, 10)}/${d.slice(5, 7)}</th>${cells}<td class="sum">${sum || '·'}</td></tr>`;
+      }
+      html += '</tbody></table></div>';
+      el.innerHTML = html;
       return;
     }
-    const rows = data || [];
-    const series = rows.map(r => ({
-      x: new Date(r.captured_at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
-      y: r.oui_count
-    }));
-    renderChart(chart, series);
-    let trend = '';
-    if (rows.length >= 2) {
-      const diff = rows[rows.length - 1].oui_count - rows[rows.length - 2].oui_count;
-      trend = diff > 0 ? `📈 +${diff} place(s) depuis le dernier relevé — des annulations, fonce réserver !`
-        : (diff < 0 ? `📉 ${diff} place(s) depuis le dernier relevé — ça se vend.` : '➖ Pas de changement depuis le dernier relevé.');
+    let html = '<div class="tbl-scroll"><table class="hist-table"><thead><tr><th>Relevé</th>'
+      + segsDays.map((s, i) => `<th class="seg-col" style="color:${SERIE_COLORS[i % SERIE_COLORS.length]}">${escapeHtml(prettyStation(s.from))} → ${escapeHtml(prettyStation(s.to))}</th>`).join('') + '</tr></thead><tbody>';
+    const allDays = [...new Set(segsDays.flatMap(s => Object.keys(s.days)))].sort().reverse().slice(0, 60);
+    for (const d of allDays) {
+      html += `<tr><th>${d.slice(8, 10)}/${d.slice(5, 7)}</th>${segsDays.map(s => {
+        const rec = s.days[d];
+        return `<td>${rec ? rec.total : '·'}</td>`;
+      }).join('')}</tr>`;
     }
-    table.innerHTML = (trend ? `<p class="hint">${trend}</p>` : '')
-      + `<details class="history"><summary>Données brutes (${rows.length} relevé${rows.length > 1 ? 's' : ''})</summary><div class="history-list">`
-      + rows.slice().reverse().map(r => `<div class="hist-item"><span>${new Date(r.captured_at).toLocaleString('fr-FR')} · ${r.oui_count} direct(s) · ${r.itins_count} itinéraire(s)</span></div>`).join('')
-      + '</div></details>';
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
   }
 
+  /* ---------- État de la vue + rendu d'ensemble ---------- */
+  const histState = { sel: [], view: 'curves', range: '30', activeDates: new Set() };
+
+  function allKnownSegments() {
+    const map = new Map();
+    for (const w of getWatched()) {
+      const k = segKeyOf(w.from, w.to);
+      if (!map.has(k)) map.set(k, { from: w.from, to: w.to, src: 'suivi' });
+    }
+    for (const [k, seg] of Object.entries(HIST.segs)) {
+      if (!map.has(k)) map.set(k, { from: seg.from, to: seg.to, src: 'local' });
+    }
+    for (const s of REMOTE_META.segments || []) {
+      const k = segKeyOf(s.from, s.to);
+      if (!map.has(k)) map.set(k, { from: s.from, to: s.to, src: 'robot' });
+    }
+    return map;
+  }
+
+  function renderSegChips() {
+    const el = document.getElementById('hist-segments');
+    const segs = [...allKnownSegments().entries()];
+    if (!segs.length) { el.innerHTML = '<span class="hint">Aucun tronçon encore — fais ton premier relevé ci-dessus 👆</span>'; return; }
+    el.innerHTML = segs.map(([k, s]) => {
+      const on = histState.sel.includes(k);
+      const icon = s.src === 'robot' ? '🤖' : (s.src === 'suivi' ? '👁️' : '📝');
+      return `<button type="button" class="seg-chip${on ? ' active' : ''}" data-seg="${escapeHtml(k)}" title="Comparer / afficher ce tronçon">${icon} ${escapeHtml(prettyStation(s.from))} → ${escapeHtml(prettyStation(s.to))}</button>`;
+    }).join('');
+  }
+
+  function renderStats(segsDays) {
+    const el = document.getElementById('hist-stats');
+    if (!el) return;
+    if (segsDays.length !== 1) {
+      el.innerHTML = segsDays.length ? `<span class="stat-pill">🔀 <b>${segsDays.length}</b> tronçons comparés</span>` : '';
+      return;
+    }
+    const s = segsDays[0];
+    const series = histSeries(s.days);
+    if (!series.length) { el.innerHTML = ''; return; }
+    const last = series[series.length - 1];
+    const weekAgo = addDaysISO(last.day, -7);
+    let ref = null;
+    for (const r of series) if (r.day <= weekAgo) ref = r; // dernier relevé ≤ J-7
+    const delta = ref ? last.total - ref.total : null;
+    const best = series.reduce((a, b) => (b.total > a.total ? b : a), series[0]);
+    const trend = delta == null ? '' : (delta > 0 ? `📈 <b>+${delta}</b> en 7 j` : (delta < 0 ? `📉 <b>${delta}</b> en 7 j` : '➖ stable en 7 j'));
+    el.innerHTML = [
+      `<span class="stat-pill">📸 dernier relevé : <b>${escapeHtml(fmtDayShort.format(new Date(last.day + 'T00:00:00')))}</b></span>`,
+      `<span class="stat-pill">🎫 trains dispo (fenêtre) : <b>${last.total}</b></span>`,
+      trend ? `<span class="stat-pill">${trend}</span>` : '',
+      `<span class="stat-pill">🏆 record : <b>${best.total}</b> le ${escapeHtml(fmtDayShort.format(new Date(best.day + 'T00:00:00')))}</span>`,
+      `<span class="stat-pill">🗂 <b>${series.length}</b> relevé(s)</span>`
+    ].join('');
+  }
+
+  function renderLegend(items) {
+    return `<div class="legend-chips">${items.map(it =>
+      `<span class="legend-chip"><span class="dot" style="background:${it.color}"></span>${escapeHtml(it.label)}</span>`).join('')}</div>`;
+  }
+
+  /** Courbes : 1 tronçon = séries par date de voyage · plusieurs tronçons = comparaison des totaux */
+  function renderCurves(el, segsDays) {
+    const note = document.getElementById('hist-note');
+    const multi = document.getElementById('hist-multidate');
+    if (!segsDays.length) { el.innerHTML = ''; multi.hidden = true; if (note) note.textContent = ''; return; }
+    if (segsDays.length > 1) {
+      multi.hidden = true;
+      const series = segsDays.map((s, i) => ({
+        name: prettyStation(s.from) + ' → ' + prettyStation(s.to),
+        color: SERIE_COLORS[i % SERIE_COLORS.length],
+        points: histSeries(s.days).map(r => ({ d: r.day, y: r.total }))
+      })).filter(s => s.points.length);
+      el.innerHTML = svgLinesChart(series) + renderLegend(series.map(s => ({ label: s.name, color: s.color })));
+      if (note) note.textContent = 'Comparaison : total des trains directs disponibles (toutes dates de voyage de la fenêtre) à chaque relevé.';
+      return;
+    }
+    const s = segsDays[0];
+    const today = todayISO();
+    const series0 = histSeries(s.days);
+    const tCount = new Map(); // date de voyage -> dernier jour où elle a été relevée
+    for (const r of series0) for (const t of Object.keys(r.perDate)) tCount.set(t, r.day);
+    let candidates = [...tCount.keys()].filter(t => t >= today).sort();
+    if (!candidates.length) candidates = [...tCount.keys()].sort().slice(-8);
+    if (histState.activeDates.size) {
+      histState.activeDates = new Set([...histState.activeDates].filter(t => candidates.includes(t)));
+    }
+    if (!histState.activeDates.size) candidates.slice(0, 3).forEach(t => histState.activeDates.add(t));
+    multi.hidden = false;
+    // Les dates actives restent toujours visibles, même au-delà des 10 premières
+    const shown = [...new Set([...candidates.slice(0, 10), ...histState.activeDates])]
+      .filter(t => candidates.includes(t)).sort().slice(0, 14);
+    multi.innerHTML = '<span class="md-title">Dates de voyage :</span>' + shown.map(t =>
+      `<button type="button" class="md-chip${histState.activeDates.has(t) ? ' active' : ''}" data-mdate="${t}">${escapeHtml(fmtDayShort.format(new Date(t + 'T00:00:00')))}</button>`).join('');
+    const series = candidates.filter(t => histState.activeDates.has(t)).map((t, i) => ({
+      name: fmtDayFull.format(new Date(t + 'T00:00:00')),
+      color: SERIE_COLORS[i % SERIE_COLORS.length],
+      points: series0.filter(r => r.perDate[t] != null).map(r => ({ d: r.day, y: r.perDate[t] }))
+    })).filter(x => x.points.length);
+    el.innerHTML = series.length
+      ? svgLinesChart(series) + renderLegend(series.map(x => ({ label: x.name, color: x.color })))
+      : emptyHistHtml();
+    if (note) note.textContent = 'Chaque courbe = une date de voyage ; les bosses = des places revenues à la vente. Coche d\u2019autres dates pour superposer.';
+  }
+
+  async function renderHistUI() {
+    const viz = document.getElementById('hist-viz');
+    if (!viz) return;
+    const segs = allKnownSegments();
+    if (!histState.sel.length) {
+      const first = segs.keys().next();
+      if (!first.done) histState.sel = [first.value];
+    }
+    histState.sel = histState.sel.filter(k => segs.has(k));
+    renderSegChips();
+    if (!histState.sel.length) {
+      viz.innerHTML = emptyHistHtml();
+      document.getElementById('hist-stats').innerHTML = '';
+      document.getElementById('hist-multidate').hidden = true;
+      return;
+    }
+    const segsDays = [];
+    for (const k of histState.sel.slice(0, 6)) {
+      const s = segs.get(k);
+      let days = await collectDays(s.from, s.to);
+      if (histState.range !== 'all') {
+        const min = addDaysISO(todayISO(), -Number(histState.range));
+        days = Object.fromEntries(Object.entries(days).filter(([d]) => d >= min));
+      }
+      segsDays.push({ from: s.from, to: s.to, days });
+    }
+    renderStats(segsDays);
+    if (histState.view === 'heat') {
+      document.getElementById('hist-multidate').hidden = true;
+      if (segsDays.length === 1) renderHeat(viz, segsDays[0].days);
+      else {
+        viz.innerHTML = '<p class="hint">🗓 La vue calendrier s\u2019applique à un seul tronçon — décoche pour n\u2019en garder qu\u2019un, ou compare en vue 📈 Courbes.</p>';
+        document.getElementById('hist-note').textContent = '';
+      }
+    } else if (histState.view === 'data') {
+      document.getElementById('hist-multidate').hidden = true;
+      renderDataTable(viz, segsDays);
+      document.getElementById('hist-note').textContent = 'Σ = total de trains directs disponibles (toutes dates de voyage) à chaque relevé.';
+    } else {
+      renderCurves(viz, segsDays);
+    }
+  }
+  function refreshHistUI() {
+    for (const k of histState.sel) mergedCache.delete(k);
+    renderHistUI();
+  }
+
+  /* ---------- Interactions de la barre d'outils ---------- */
+  document.getElementById('hist-segments').addEventListener('click', ev => {
+    const chip = ev.target.closest('[data-seg]');
+    if (!chip) return;
+    const k = chip.dataset.seg;
+    if (histState.sel.includes(k)) {
+      histState.sel = histState.sel.filter(x => x !== k);
+    } else {
+      if (histState.view === 'heat' || !histState.sel.length) histState.sel = [k];
+      else histState.sel = [...histState.sel, k].slice(0, 6);
+    }
+    renderSegChips();
+    renderHistUI();
+  });
+  document.getElementById('hist-range').addEventListener('change', ev => {
+    histState.range = ev.target.value;
+    renderHistUI();
+  });
+  document.querySelectorAll('.hist-viewbtn').forEach(b => b.addEventListener('click', () => {
+    histState.view = b.dataset.view;
+    document.querySelectorAll('.hist-viewbtn').forEach(x => x.classList.toggle('active', x === b));
+    renderHistUI();
+  }));
+  document.getElementById('hist-multidate').addEventListener('click', ev => {
+    const chip = ev.target.closest('[data-mdate]');
+    if (!chip) return;
+    const t = chip.dataset.mdate;
+    if (histState.activeDates.has(t)) histState.activeDates.delete(t);
+    else histState.activeDates.add(t);
+    renderHistUI();
+  });
+
+  /* ---------- Formulaire : instantané manuel ---------- */
   document.querySelector('.search-form[data-mode="suivi"]').addEventListener('submit', async ev => {
     ev.preventDefault();
-    if (!sb) return;
     const fd = new FormData(ev.target);
     const from = (fd.get('from') || '').trim(), to = (fd.get('to') || '').trim(), forDate = fd.get('date');
+    if (!from || !to || !forDate) { setStatus('Remplis le départ, l\u2019arrivée et la date 🙏', true); return; }
     const btn = ev.target.querySelector('.submit-btn');
     btn.disabled = true;
+    setStatus(randomJoke());
     try {
       const row = await takeSnapshot(from, to, forDate);
-      setStatus(`📸 Instantané enregistré : ${row.oui_count} direct(s), ${row.itins_count} itinéraire(s) pour le ${fmtDateFR(forDate)}`);
-      await renderSuiviHistory(from, to, forDate);
-    } catch (e) { setStatus('❌ ' + escapeHtml(e.message), true); }
+      setStatus(`📸 Instantané enregistré : <strong>${row.oui_count}</strong> direct(s) pour le ${fmtDateFR(forDate)}${sb ? ' · sauvegardé en ligne aussi' : ''}.`);
+      histState.sel = [segKeyOf(from, to)];
+      histState.activeDates = new Set([forDate]);
+      refreshHistUI();
+    } catch (e) { setStatus('❌ ' + escapeHtml(e.message || e), true); }
     btn.disabled = false;
   });
 
@@ -1399,21 +1886,92 @@ if (typeof document !== 'undefined') {
     const w = getWatched();
     if (!w.some(x => norm(x.from) === norm(from) && norm(x.to) === norm(to))) { w.unshift({ from, to, forDate }); saveWatched(w); }
     setStatus(`👁️ ${escapeHtml(prettyStation(from))} → ${escapeHtml(prettyStation(to))} est suivi : un instantané sera pris à chaque visite du site (1× par 12 h).`);
-    try { await takeSnapshot(from, to, forDate); } catch (e) {}
+    try { await takeSnapshot(from, to, forDate); histState.sel = [segKeyOf(from, to)]; refreshHistUI(); } catch (e) {}
+    renderSegChips();
   });
 
-  // Auto-instantanés des trajets suivis au chargement (1× par 12 h, max 3 par visite)
+  /* ---------- Auto-instantanés des trajets suivis (1× par 12 h, max 3 par visite) ---------- */
   (async function autoSnapshots() {
-    if (!sb) return;
     const THROTTLE_KEY = 'tgvmax_radar_throttle_v1';
     let last = {};
     try { last = JSON.parse(localStorage.getItem(THROTTLE_KEY) || '{}'); } catch (e) {}
     const watched = getWatched().slice(0, 3);
+    let captured = false;
     for (const route of watched) {
       const sig = `${norm(route.from)}>${norm(route.to)}>${route.forDate}`;
       if (Date.now() - (last[sig] || 0) < 12 * 3600 * 1000) continue;
-      try { await takeSnapshot(route.from, route.to, route.forDate); last[sig] = Date.now(); } catch (e) {}
+      try { await takeSnapshot(route.from, route.to, route.forDate); last[sig] = Date.now(); captured = true; } catch (e) {}
     }
     try { localStorage.setItem(THROTTLE_KEY, JSON.stringify(last)); } catch (e) {}
+    if (captured) refreshHistUI();
   })();
+
+  /* ---------- Snapshot quotidien : statut + watched.json + export/import/purge ---------- */
+  function renderSyncStatus() {
+    const el = document.getElementById('hist-sync-status');
+    if (!el) return;
+    const n = (REMOTE_META.segments || []).length;
+    el.innerHTML = REMOTE_META.lastRun
+      ? `🤖 <strong>Snapshot automatique actif</strong> — dernier relevé ${escapeHtml(new Date(REMOTE_META.lastRun).toLocaleString('fr-FR', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }))}, ${n} tronçon(s) dans <code>data/watched.json</code>.`
+      : '🤖 Snapshot automatique : <strong>pas encore actif</strong> — « Préparer watched.json » ci-dessous l\u2019active en 1 minute (un relevé chaque nuit à 6 h 45).';
+  }
+
+  async function buildWatchedJson() {
+    const list = [];
+    const push = (from, to) => {
+      if (from && to && !list.some(x => segKeyOf(x.from, x.to) === segKeyOf(from, to))) list.push({ from, to });
+    };
+    for (const w of getWatched()) push(w.from, w.to);
+    for (const seg of Object.values(HIST.segs)) push(seg.from, seg.to);
+    for (const s of REMOTE_META.segments || []) push(s.from, s.to);
+    return JSON.stringify(list, null, 2);
+  }
+
+  document.getElementById('hist-copy-watched').addEventListener('click', async () => {
+    const json = await buildWatchedJson();
+    try {
+      await navigator.clipboard.writeText(json);
+      setStatus('📋 <code>watched.json</code> copié ! Colle-le dans le dépôt GitHub (l\u2019onglet d\u2019ajout de fichier s\u2019ouvre : colle puis Commit).');
+    } catch (e) {
+      download('watched.json', json, 'application/json');
+      setStatus('📋 Le fichier <code>watched.json</code> a été téléchargé — dépose-le dans le dossier <code>data/</code> du dépôt.');
+    }
+    try { window.open(REPO_NEW_FILE_URL, '_blank', 'noopener'); } catch (e) {}
+  });
+
+  document.getElementById('hist-export').addEventListener('click', () => {
+    if (!Object.keys(HIST.segs).length) { setStatus('Historique local vide — rien à exporter.', true); return; }
+    download('tgvmax-radar-historique.json', histExportJson(), 'application/json');
+    setStatus('⬇️ Historique local exporté (JSON).');
+  });
+
+  document.getElementById('hist-import').addEventListener('click', () => document.getElementById('hist-import-file').click());
+  document.getElementById('hist-import-file').addEventListener('change', ev => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        histImportJson(JSON.parse(String(reader.result)));
+        setStatus('⬆️ Historique importé et fusionné ✅');
+        refreshHistUI();
+      } catch (e) { setStatus('❌ Import impossible : ' + escapeHtml(e.message || e), true); }
+    };
+    reader.readAsText(file);
+    ev.target.value = '';
+  });
+
+  document.getElementById('hist-clear').addEventListener('click', () => {
+    if (!confirm('Effacer tout l\u2019historique local de ce navigateur ? (Les relevés du dépôt et de Supabase ne sont pas touchés.)')) return;
+    HIST = { v: 1, segs: {} };
+    try { localStorage.removeItem(HISTO_KEY); } catch (e) {}
+    refreshHistUI();
+    setStatus('🗑 Historique local effacé.');
+  });
+
+  /* ---------- Initialisation : meta du dépôt puis premier rendu ---------- */
+  loadRemoteMeta().then(() => { renderSyncStatus(); renderHistUI(); });
+  renderHistUI();
+  // Re-rendu à chaque ouverture de l'onglet Suivi (coût nul grâce aux caches)
+  document.querySelector('.tab[data-tab="suivi"]').addEventListener('click', () => { renderHistUI(); renderSyncStatus(); });
 }

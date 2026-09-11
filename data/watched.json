@@ -1,0 +1,8 @@
+[
+  { "from": "PARIS (intramuros)", "to": "LYON (intramuros)" },
+  { "from": "PARIS (intramuros)", "to": "MARSEILLE ST CHARLES" },
+  { "from": "PARIS (intramuros)", "to": "BORDEAUX ST JEAN" },
+  { "from": "PARIS (intramuros)", "to": "LILLE (intramuros)" },
+  { "from": "PARIS (intramuros)", "to": "STRASBOURG" },
+  { "from": "LYON (intramuros)", "to": "MARSEILLE ST CHARLES" }
+]

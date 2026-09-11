@@ -1,0 +1,44 @@
+name: Snapshot quotidien TGVmax
+
+# Chaque nuit : relève la fenêtre complète de réservation (31 jours) pour
+# chaque tronçon de data/watched.json, et versionne le résultat dans
+# data/history/. GitHub Pages republie automatiquement, le site lit ces
+# fichiers pour tracer l'évolution des disponibilités.
+
+on:
+  schedule:
+    - cron: '45 4 * * *'   # 04:45 UTC = 06:45 à Paris, après la mise à jour nocturne du dataset
+  workflow_dispatch: {}     # déclenchement manuel possible
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Relevé des disponibilités
+        run: node scripts/daily-snapshot.mjs
+
+      - name: Commit & push des données
+        run: |
+          git config user.name "tgvmax-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "Aucune donnée nouvelle — rien à committer"
+          else
+            git commit -m "Snapshot quotidien des disponibilités ($(date -u +%F))"
+            git push
+          fi

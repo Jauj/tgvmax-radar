@@ -166,17 +166,11 @@
     </section>
 
     <section id="tab-suivi" class="tab-panel">
-      <div id="suivi-setup" class="setup-box">
-        <h2>📈 Suivi d'évolution des places</h2>
-        <p>Cet onglet enregistre chaque jour le nombre de places Max Jeunes d'un trajet et trace la courbe dans le temps : <strong>places qui remontent</strong> = des annulations, fonce réserver · <strong>places qui fondent</strong> = ça se vend, arrête d'attendre.</p>
-        <p>Pour l'activer, il faut le connecter à un projet Supabase (gratuit, 3 minutes) :</p>
-        <ol>
-          <li>Crée un projet sur <a href="https://supabase.com/dashboard" target="_blank" rel="noopener">supabase.com/dashboard</a></li>
-          <li>Ouvre <strong>SQL Editor → New query</strong> et colle le contenu du fichier <code>supabase-setup.sql</code> → Run</li>
-          <li>Copie l'<strong>URL du projet</strong> et la <strong>clé anon</strong> (Settings → API) dans <code>supabase-config.js</code></li>
-        </ol>
+      <div class="setup-box suivi-intro">
+        <h2>📈 Suivi &amp; historique des disponibilités</h2>
+        <p>Chaque relevé mémorise le nombre de trains Max Jeunes d'un tronçon pour <strong>toutes les dates de voyage</strong> de la fenêtre de réservation. Vu dans le temps, ça révèle les <strong>ouvertures de places</strong> (annulations, mises en vente) et les <strong>épuisements</strong> — pour savoir exactement quand réserver.</p>
       </div>
-      <div id="suivi-app" hidden>
+      <div id="suivi-app">
         <form class="search-form" data-mode="suivi">
           <label class="field">Départ
             <div class="ac-wrap"><input type="text" name="from" placeholder="Ex : Paris" autocomplete="off" required></div>
@@ -193,9 +187,51 @@
             <button type="button" id="watch-btn" class="star-btn" title="Prendre un instantané chaque fois que le site est ouvert">➕ Suivre</button>
           </div>
         </form>
-        <p class="hint">📸 L'instantané compte les places du jour et l'ajoute à l'historique. ➕ « Suivre » fait la même chose automatiquement à chaque visite (1× par 12 h), tant que ce trajet reste dans ta liste.</p>
-        <div id="suivi-chart" class="suivi-chart"></div>
-        <div id="suivi-table" class="suivi-table"></div>
+        <p class="hint">📸 « Instantané » enregistre le compte du jour dans l'historique. ➕ « Suivre » le refait automatiquement à chaque visite (1× par 12 h). Le résultat se lit dans les vues ci-dessous.</p>
+        <div id="hist-stats" class="hist-stats"></div>
+        <div class="hist-toolbar">
+          <div id="hist-segments" class="hist-segments" aria-label="Tronçons suivis"></div>
+          <div class="hist-controls">
+            <select id="hist-range" class="hist-select" title="Période affichée" aria-label="Période affichée">
+              <option value="30">30 j</option>
+              <option value="90">90 j</option>
+              <option value="all">Tout</option>
+            </select>
+            <div class="hist-views" role="group" aria-label="Vue">
+              <button type="button" class="hist-viewbtn active" data-view="curves" title="Évolution dans le temps">📈 Courbes</button>
+              <button type="button" class="hist-viewbtn" data-view="heat" title="Relevés × dates de voyage">🗓 Calendrier</button>
+              <button type="button" class="hist-viewbtn" data-view="data" title="Tableau et export">📋 Données</button>
+            </div>
+          </div>
+        </div>
+        <div id="hist-multidate" class="hist-multidate" hidden></div>
+        <div id="hist-viz" class="suivi-chart"></div>
+        <div id="hist-note" class="hint"></div>
+        <details class="history" id="hist-sync">
+          <summary>⚙️ Snapshot quotidien automatique &amp; sauvegarde des données</summary>
+          <div class="history-list">
+            <p class="hint" id="hist-sync-status">…</p>
+            <div class="hist-actions">
+              <button type="button" id="hist-copy-watched" class="hist-mini-btn">📋 Préparer watched.json</button>
+              <button type="button" id="hist-export" class="hist-mini-btn">⬇️ Exporter (JSON)</button>
+              <button type="button" id="hist-import" class="hist-mini-btn">⬆️ Importer</button>
+              <input type="file" id="hist-import-file" accept=".json,application/json" hidden>
+              <button type="button" id="hist-clear" class="hist-mini-btn danger">🗑 Effacer l'historique local</button>
+            </div>
+            <p class="hint">Pour un relevé <strong>chaque nuit, même sans visiter le site</strong> : un robot GitHub Actions relève automatiquement les tronçons listés dans <code>data/watched.json</code>. Le bouton « Préparer » copie ce fichier à jour — colle-le dans le dépôt (Add file → Create new file → nom <code>data/watched.json</code> → Commit) et le snapshot devient automatique.</p>
+            <details class="history" id="supa-optional">
+              <summary>☁️ Sauvegarde en ligne optionnelle (Supabase)</summary>
+              <div id="suivi-setup" class="setup-box supa-box">
+                <p>L'historique fonctionne déjà <strong>sans aucun compte</strong> (mémoire de ce navigateur + snapshot public du dépôt). Pour sauvegarder aussi chaque instantané en ligne (partagé entre tes appareils) :</p>
+                <ol>
+                  <li>Crée un projet sur <a href="https://supabase.com/dashboard" target="_blank" rel="noopener">supabase.com/dashboard</a></li>
+                  <li>Ouvre <strong>SQL Editor → New query</strong> et colle le contenu du fichier <code>supabase-setup.sql</code> → Run</li>
+                  <li>Copie l'<strong>URL du projet</strong> et la <strong>clé anon</strong> (Settings → API) dans <code>supabase-config.js</code></li>
+                </ol>
+              </div>
+            </details>
+          </div>
+        </details>
       </div>
     </section>
 

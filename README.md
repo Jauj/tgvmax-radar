@@ -10,6 +10,12 @@ Outil local & gratuit pour trouver les places **TGVmax** ouvertes à la réserva
 - 🗺️ Carte interactive (Leaflet + OpenStreetMap/CARTO).
 - ⇄ **Échange départ / arrivée** : inverse le sens du trajet en un clic, dans tous les modes de recherche.
 - 🌙 **Mode sombre** : bouton de bascule clair/sombre en haut à droite — préférence mémorisée, sinon suit le réglage du système (sans flash au chargement).
+- 📈 **Suivi & historique des disponibilités** : chaque relevé mémorise le nombre de trains directs d'un tronçon pour **toutes les dates de voyage** de la fenêtre de réservation, et les vues retracent l'évolution jour après jour :
+  - **📈 Courbes** — une courbe par date de voyage (repérer les places qui remontent) ou comparaison de plusieurs tronçons sur un même graphique ;
+  - **🗓 Calendrier** — heatmap « relevés × dates de voyage » : on voit d'un coup d'œil les ouvertures (vert) et les épuisements (rouge) ;
+  - **📋 Données** — tableau croisé, export CSV-ready (JSON), import, purge.
+  - Fonctionne **sans aucun compte** : historique local (localStorage) + fusion automatique des relevés du dépôt. La sauvegarde Supabase reste optionnelle.
+- 🤖 **Snapshot quotidien automatique** : une GitHub Action ([`.github/workflows/daily-snapshot.yml`](.github/workflows/daily-snapshot.yml)) relève chaque nuit à 6 h 45 la fenêtre complète pour chaque tronçon de [`data/watched.json`](data/watched.json), et versionne le résultat dans `data/history/` — consultable par tous, même sans visiter le site.
 - ⚡ Une seule requête réseau par date (filtre `od_happy_card=OUI` fait côté API — plus léger que le site original).
 
 ## Source de données
@@ -54,9 +60,20 @@ gh api repos/{owner}/{repo}/pages -X POST -f "source[branch]=main" -f "source[pa
 
 | Fichier | Rôle |
 |---|---|
-| `index.html` | Page unique : 3 onglets de recherche + carte |
-| `app.js` | Logique : API SNCF, recherches (classique/inversée/découpage), carte |
-| `style.css` | Habillage |
+| `index.html` | Page unique : 3 onglets de recherche + suivi + carte |
+| `app.js` | Logique : API SNCF, recherches, carte, historique des disponibilités |
+| `style.css` | Habillage (thème clair/sombre, heatmap, graphiques) |
+| `data/watched.json` | Tronçons relevés automatiquement chaque nuit |
+| `data/history/*.json` | Historique des relevés (un fichier par tronçon) |
+| `scripts/daily-snapshot.mjs` | Robot du snapshot quotidien (GitHub Actions) |
+| `.github/workflows/daily-snapshot.yml` | Planification du relevé nocturne |
+| `supabase-config.js` / `supabase-setup.sql` | Sauvegarde en ligne **optionnelle** des instantanés |
+
+## Ajouter un tronçon au snapshot automatique
+
+1. Sur le site : onglet **📈 Suivi** → fais tes recherches/instantanés habituels.
+2. Ouvre **⚙️ Snapshot quotidien automatique** → **📋 Préparer watched.json** : le fichier à jour est copié et GitHub s'ouvre sur la page d'ajout de fichier.
+3. Colle, Commit — la nuit suivante, le relevé est pris en compte automatiquement.
 
 ## Crédits
 
