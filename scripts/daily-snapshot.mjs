@@ -140,17 +140,28 @@ async function main() {
 
   const ts = Date.now();
   const summary = [];
+  /* Index par date : « o|d » (normalisés) -> nb de trains — évite de re-normaliser
+     chaque ligne pour chaque tronçon (indispensable avec ~2 700 tronçons suivis). */
+  const dateIndex = new Map();
+  for (const d of dates) {
+    const rows = rowsByDate.get(d);
+    if (!rows) continue;
+    const idx = new Map();
+    for (const f of rows) {
+      const k = norm(f.origine) + '|' + norm(f.destination);
+      idx.set(k, (idx.get(k) || 0) + 1);
+    }
+    dateIndex.set(d, idx);
+  }
   for (const seg of segs) {
     const hist = loadHistory(seg.from, seg.to);
     hist.segment = { from: seg.from, to: seg.to };
     const perDate = {};
     for (const d of dates) {
-      const rows = rowsByDate.get(d);
-      if (!rows) continue;
+      const idx = dateIndex.get(d);
+      if (!idx) continue;
       let n = 0;
-      for (const f of rows) {
-        if (seg.fromSet.has(norm(f.origine)) && seg.toSet.has(norm(f.destination))) n++;
-      }
+      for (const o of seg.fromSet) for (const dd of seg.toSet) n += idx.get(o + '|' + dd) || 0;
       perDate[d] = n;
     }
     // Le relevé du jour est canonique : on remplace l'entrée du jour
@@ -159,7 +170,8 @@ async function main() {
     hist.updated = new Date(ts).toISOString();
     const file = join(ROOT, 'data', 'history', slugOf(seg.from, seg.to) + '.json');
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(hist, null, 1) + '\n');
+    // JSON compact : ~2 700 fichiers × 180 jours — l'indentation coûterait trop cher
+    writeFileSync(file, JSON.stringify(hist) + '\n');
     const total = Object.values(perDate).reduce((a, b) => a + b, 0);
     summary.push(`  • ${seg.from} → ${seg.to} : ${total} trains directs sur la fenêtre (jour J : ${perDate[today]})`);
   }
@@ -172,7 +184,8 @@ async function main() {
   }, null, 1) + '\n');
 
   console.log('Résumé :');
-  for (const l of summary) console.log(l);
+  for (const l of summary.slice(0, 12)) console.log(l);
+  if (summary.length > 12) console.log(`  … et ${summary.length - 12} autre(s) tronçon(s).`);
   console.log('OK — data/history/ à jour.');
 }
 

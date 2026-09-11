@@ -190,6 +190,10 @@
         <p class="hint">📸 « Instantané » enregistre le compte du jour dans l'historique. ➕ « Suivre » le refait automatiquement à chaque visite (1× par 12 h). Le résultat se lit dans les vues ci-dessous.</p>
         <div id="hist-stats" class="hist-stats"></div>
         <div class="hist-toolbar">
+          <div class="hist-filterrow">
+            <input type="search" id="hist-filter" class="hist-filter" placeholder="🔎 Filtrer les tronçons (ex : lyon, bordeaux, strasbourg…)" autocomplete="off" aria-label="Filtrer les tronçons suivis">
+            <span id="hist-segcount" class="hist-segcount"></span>
+          </div>
           <div id="hist-segments" class="hist-segments" aria-label="Tronçons suivis"></div>
           <div class="hist-controls">
             <select id="hist-range" class="hist-select" title="Période affichée" aria-label="Période affichée">

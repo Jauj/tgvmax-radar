@@ -16,6 +16,7 @@ Outil local & gratuit pour trouver les places **TGVmax** ouvertes à la réserva
   - **📋 Données** — tableau croisé, export CSV-ready (JSON), import, purge.
   - Fonctionne **sans aucun compte** : historique local (localStorage) + fusion automatique des relevés du dépôt. La sauvegarde Supabase reste optionnelle.
 - 🤖 **Snapshot quotidien automatique** : une GitHub Action ([`.github/workflows/daily-snapshot.yml`](.github/workflows/daily-snapshot.yml)) relève chaque nuit à 6 h 45 la fenêtre complète pour chaque tronçon de [`data/watched.json`](data/watched.json), et versionne le résultat dans `data/history/` — consultable par tous, même sans visiter le site.
+- 🌐 **Couverture maximale, dans les deux sens** : `data/watched.json` est généré par [`scripts/gen-watched.mjs`](scripts/gen-watched.mjs) en scannant toute la fenêtre de réservation — **chaque paire de gares reliée par au moins un train Max Jeunes, A→B et B→A** (~2 700 tronçons à date, du Paris‑Lyon aux liaisons à un train par mois). Le filtre 🔎 de l'onglet Suivi permet de retrouver n'importe quel tronçon.
 - ⚡ Une seule requête réseau par date (filtre `od_happy_card=OUI` fait côté API — plus léger que le site original).
 
 ## Source de données

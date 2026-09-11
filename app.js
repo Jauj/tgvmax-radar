@@ -1587,8 +1587,9 @@ if (typeof document !== 'undefined') {
       travelDates = [...tSet].sort().slice(-31);
     }
     if (!travelDates.length) { el.innerHTML = emptyHistHtml(); return; }
+    const showAllHeads = dayKeys.length <= 21; // avec peu de relevés, affiche toutes les dates (lisibilité)
     const head = dayKeys.map((d, i) =>
-      `<div class="hm-head${i % 2 ? '' : ' show'}" title="Relevé du ${d}">${d.slice(8, 10)}/${d.slice(5, 7)}</div>`).join('');
+      `<div class="hm-head${showAllHeads || i % 2 === 0 ? ' show' : ''}" title="Relevé du ${d}">${d.slice(8, 10)}/${d.slice(5, 7)}</div>`).join('');
     const rows = travelDates.map(t => {
       const cells = dayKeys.map(d => {
         const n = days[d].perDate[t];
@@ -1605,7 +1606,7 @@ if (typeof document !== 'undefined') {
           ${rows}
         </div>
       </div>
-      <div class="hm-legend">Places directes :
+      <div class="hm-legend">1 colonne = 1 relevé quotidien (date en tête de colonne) · 1 ligne = 1 date de voyage · Places directes :
         <span class="hm-swatch hm-0"></span>0
         <span class="hm-swatch hm-1"></span>1–2
         <span class="hm-swatch hm-2"></span>3–5
@@ -1676,7 +1677,9 @@ if (typeof document !== 'undefined') {
   }
 
   /* ---------- État de la vue + rendu d'ensemble ---------- */
-  const histState = { sel: [], view: 'curves', range: '30', activeDates: new Set() };
+  const histState = { sel: [], view: 'curves', range: '30', activeDates: new Set(), filter: '' };
+  const SEG_CHIP_CAP = 300;   // puces rendues avant d'exiger le filtre
+  let chipsKey = null;        // signature du dernier rendu des puces
 
   function allKnownSegments() {
     const map = new Map();
@@ -1696,13 +1699,44 @@ if (typeof document !== 'undefined') {
 
   function renderSegChips() {
     const el = document.getElementById('hist-segments');
+    const countEl = document.getElementById('hist-segcount');
+    if (!el) return;
     const segs = [...allKnownSegments().entries()];
-    if (!segs.length) { el.innerHTML = '<span class="hint">Aucun tronçon encore — fais ton premier relevé ci-dessus 👆</span>'; return; }
-    el.innerHTML = segs.map(([k, s]) => {
-      const on = histState.sel.includes(k);
+    if (!segs.length) {
+      chipsKey = '';
+      el.innerHTML = '<span class="hint">Aucun tronçon encore — fais ton premier relevé ci-dessus 👆</span>';
+      if (countEl) countEl.textContent = '';
+      return;
+    }
+    // Rebuild coûteux seulement si nécessaire (filtre, sources) ; sinon simple synchro des classes
+    const key = (histState.filter || '') + '|' + segs.length + '|' + segs[0][0] + '|' + segs[segs.length - 1][0];
+    if (key === chipsKey && el.querySelector('.seg-chip')) { syncSegChips(); return; }
+    chipsKey = key;
+    const all = segs.map(([k, s]) => ({
+      k,
+      src: s.src,
+      label: prettyStation(s.from) + ' → ' + prettyStation(s.to)
+    }));
+    const f = norm(histState.filter || '');
+    const matched = f ? all.filter(s => norm(s.label).includes(f)) : all;
+    const shown = matched.slice(0, SEG_CHIP_CAP);
+    el.innerHTML = shown.map(s => {
       const icon = s.src === 'robot' ? '🤖' : (s.src === 'suivi' ? '👁️' : '📝');
-      return `<button type="button" class="seg-chip${on ? ' active' : ''}" data-seg="${escapeHtml(k)}" title="Comparer / afficher ce tronçon">${icon} ${escapeHtml(prettyStation(s.from))} → ${escapeHtml(prettyStation(s.to))}</button>`;
-    }).join('');
+      return `<button type="button" class="seg-chip" data-seg="${escapeHtml(s.k)}" title="Comparer / afficher ce tronçon">${icon} ${escapeHtml(s.label)}</button>`;
+    }).join('')
+      + (matched.length > shown.length
+        ? `<span class="hint seg-more">… ${matched.length - shown.length} autre(s) tronçon(s) masqué(s) — affîne avec le filtre 🔎</span>`
+        : '');
+    if (countEl) countEl.textContent = matched.length === all.length
+      ? `${all.length} tronçon(s) suivi(s)`
+      : `${matched.length} sur ${all.length} tronçons`;
+    syncSegChips();
+  }
+  /** Met à jour l'état actif des puces sans reconstruire le DOM (rapide même avec 2 700 tronçons) */
+  function syncSegChips() {
+    document.querySelectorAll('#hist-segments .seg-chip').forEach(chip => {
+      chip.classList.toggle('active', histState.sel.includes(chip.dataset.seg));
+    });
   }
 
   function renderStats(segsDays) {
@@ -1824,6 +1858,7 @@ if (typeof document !== 'undefined') {
   }
   function refreshHistUI() {
     for (const k of histState.sel) mergedCache.delete(k);
+    chipsKey = null; // les sources ont pu changer (instantané, suivi, import…)
     renderHistUI();
   }
 
@@ -1838,8 +1873,14 @@ if (typeof document !== 'undefined') {
       if (histState.view === 'heat' || !histState.sel.length) histState.sel = [k];
       else histState.sel = [...histState.sel, k].slice(0, 6);
     }
-    renderSegChips();
+    syncSegChips();
     renderHistUI();
+  });
+  let histFilterTimer = null;
+  document.getElementById('hist-filter').addEventListener('input', ev => {
+    histState.filter = ev.target.value;
+    clearTimeout(histFilterTimer);
+    histFilterTimer = setTimeout(renderSegChips, 120);
   });
   document.getElementById('hist-range').addEventListener('change', ev => {
     histState.range = ev.target.value;
