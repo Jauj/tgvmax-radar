@@ -8,6 +8,8 @@ name: Snapshot quotidien TGVmax
 on:
   schedule:
     - cron: '45 4 * * *'   # 04:45 UTC = 06:45 à Paris, après la mise à jour nocturne du dataset
+    - cron: '45 7 * * *'   # secours : 07:45 UTC = 09:45 à Paris (le planificateur GitHub
+                           # retarde parfois de plusieurs heures, voire saute un créneau)
   workflow_dispatch: {}     # déclenchement manuel possible
 
 permissions:
@@ -28,10 +30,20 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Déjà relevé aujourd'hui ?
+        run: |
+          TODAY=$(date -u +%F)
+          if node -e "const m=require('./data/history/_meta.json');process.exit((m.lastRun||'').startsWith(process.argv[1])?0:1)" "$TODAY"; then
+            echo "Un relevé du $TODAY est déjà enregistré — exécution sautée."
+            echo "SKIP=true" >> "$GITHUB_ENV"
+          fi
+
       - name: Relevé des disponibilités
+        if: env.SKIP != 'true'
         run: node scripts/daily-snapshot.mjs
 
       - name: Commit & push des données
+        if: env.SKIP != 'true'
         run: |
           git config user.name "tgvmax-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
