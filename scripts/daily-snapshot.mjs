@@ -2,27 +2,33 @@
 /* ============================================================
    TGVmax Radar — snapshot quotidien des disponibilités
    ------------------------------------------------------------
-   Exécuté chaque nuit par GitHub Actions (.github/workflows/daily-snapshot.yml)
+   Exécuté par GitHub Actions (.github/workflows/daily-snapshot.yml)
    ou manuellement : `node scripts/daily-snapshot.mjs`
 
-   Pour CHAQUE date de voyage de la fenêtre de réservation (~31 jours),
-   relève le dataset open data SNCF « tgvmax » (od_happy_card = OUI) et
-   compte les trains directs réservables pour chaque tronçon listé dans
-   data/watched.json. Résultat fusionné dans data/history/<tronçon>.json :
+   Pour CHAQUE date de voyage de la fenêtre glissante (J à J+30),
+   relève le dataset open data SNCF « tgvmax » (od_happy_card = OUI)
+   et DÉCOUVRE automatiquement toutes les paires origine→destination
+   qui ont au moins un train direct (dans les deux sens), en plus des
+   tronçons déjà suivis (data/watched.json + _meta.json, libellés
+   intacts). Résultat fusionné dans data/history/<tronçon>.json :
      { updated, segment: {from, to}, days: { "AAAA-MM-JJ":
        { ts, perDate: { "AAAA-MM-JJ": nb_directs, ... } } } }
-   Le site (onglet Suivi) lit ces fichiers pour tracer les courbes.
+   La fenêtre avance d'un jour chaque jour : le « mois suivant » est
+   couvert en continu, les nouvelles liaisons sont capturées sans
+   intervention. Le site (onglet Suivi) lit ces fichiers.
    ============================================================ */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
+import { collectPairs, buildWatched } from './gen-watched.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API = 'https://data.sncf.com/api/records/1.0/search/';
 const DATASET = 'tgvmax';
-const WINDOW_DAYS = 30;    // dates de voyage couvertes (J à J+30)
+const WINDOW_DAYS = 30;    // dates de voyage couvertes (J à J+30) — mois glissant
 const KEEP_DAYS = 180;     // historique conservé dans les fichiers du dépôt
 const PAGE = 10000;
+const MIN_ROWS = 500;      // garde-fou : en dessous, le dataset est suspect → on n'écrit rien
 
 /* ---------- Normalisation (alignée sur app.js) ---------- */
 function norm(s) {
@@ -68,7 +74,6 @@ function addDaysISO(iso, n) {
   const dt = new Date(Date.UTC(y, m - 1, d + n));
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
 }
-const dayDiff = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
 
 /* ---------- API ---------- */
 async function fetchJson(url) {
@@ -76,7 +81,7 @@ async function fetchJson(url) {
   if (!r.ok) throw new Error(`HTTP ${r.status} sur ${url.slice(0, 90)}…`);
   return r.json();
 }
-/** Toutes les lignes OUI d'une date de voyage (paginate au cas où > 10 000) */
+/** Toutes les lignes OUI d'une date de voyage (paginé au cas où > 10 000) */
 async function fetchOuiRows(dateISO) {
   const out = [];
   let start = 0;
@@ -109,21 +114,36 @@ function pruneDays(days) {
   for (const d of Object.keys(days)) if (d < min) delete days[d];
 }
 
+/* ---------- Fusion des sources de tronçons (pur, testable) ---------- */
+/** watched.json ∪ _meta.json — sans doublon (clé normalisée), watched prioritaire */
+export function mergeExisting(watched, metaSegs) {
+  const out = [];
+  const seen = new Set();
+  const push = (w) => {
+    if (!w || !w.from || !w.to) return;
+    const k = segKeyOf(w.from, w.to);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ from: String(w.from).trim(), to: String(w.to).trim() });
+  };
+  for (const w of watched || []) push(w);
+  for (const s of metaSegs || []) push(s);
+  return out;
+}
+
 /* ---------- Programme principal ---------- */
 async function main() {
   const watchedPath = join(ROOT, 'data', 'watched.json');
-  const watched = JSON.parse(readFileSync(watchedPath, 'utf8'));
-  if (!Array.isArray(watched) || !watched.length) {
-    console.log('data/watched.json est vide — rien à relever.');
-    return;
-  }
-  const segs = watched
-    .filter(w => w && w.from && w.to)
-    .map(w => ({ from: String(w.from).trim(), to: String(w.to).trim(), fromSet: expandLabel(w.from), toSet: expandLabel(w.to) }));
+  const metaPath = join(ROOT, 'data', 'history', '_meta.json');
+  let watched = [], metaSegs = [];
+  try { const j = JSON.parse(readFileSync(watchedPath, 'utf8')); if (Array.isArray(j)) watched = j; } catch { /* absent/corrompu */ }
+  try { const j = JSON.parse(readFileSync(metaPath, 'utf8')); if (Array.isArray(j && j.segments)) metaSegs = j.segments; } catch { /* absent/corrompu */ }
+  const existing = mergeExisting(watched, metaSegs);
+
   const today = todayUTC();
   const dates = Array.from({ length: WINDOW_DAYS + 1 }, (_, i) => addDaysISO(today, i));
 
-  console.log(`Relevé du ${today} : ${segs.length} tronçon(s) × ${dates.length} dates de voyage…`);
+  console.log(`Relevé du ${today} : fenêtre glissante ${dates[0]} → ${dates[dates.length - 1]} (${dates.length} dates de voyage)…`);
   const rowsByDate = new Map();
   let failed = 0;
   for (const d of dates) {
@@ -138,10 +158,13 @@ async function main() {
   if (failed === dates.length) throw new Error('Aucune date n\'a pu être relevée — API injoignable ?');
   if (failed) console.warn(`${failed} date(s) en échec (ignorées, réessayées demain).`);
 
+  const totalRows = [...rowsByDate.values()].reduce((a, r) => a + (r ? r.length : 0), 0);
+  if (totalRows < MIN_ROWS) throw new Error(`Dataset suspect (${totalRows} ligne(s) sur la fenêtre < ${MIN_ROWS}) — relevé annulé pour ne pas polluer l'historique.`);
+
   const ts = Date.now();
   const summary = [];
   /* Index par date : « o|d » (normalisés) -> nb de trains — évite de re-normaliser
-     chaque ligne pour chaque tronçon (indispensable avec ~2 700 tronçons suivis). */
+     chaque ligne pour chaque tronçon (indispensable avec des milliers de tronçons). */
   const dateIndex = new Map();
   for (const d of dates) {
     const rows = rowsByDate.get(d);
@@ -153,6 +176,17 @@ async function main() {
     }
     dateIndex.set(d, idx);
   }
+
+  /* Découverte automatique : toutes les paires observées dans le mois glissant,
+     + leur sens inverse, en UNION avec les tronçons déjà suivis (libellés intacts).
+     Aucun plafond : la couverture suit le dataset, jour après jour. */
+  const { pairs, rawOf } = collectPairs([...rowsByDate.values()].filter(Boolean));
+  const { list, total: totalPaires } = buildWatched(pairs, rawOf, existing, { cap: Number.MAX_SAFE_INTEGER, min: 1 });
+  const segs = list.map(w => ({ from: w.from, to: w.to, fromSet: expandLabel(w.from), toSet: expandLabel(w.to) }));
+  const nouveaux = Math.max(0, segs.length - existing.length);
+
+  console.log(`Découverte : ${pairs.size} paire(s) observée(s) dans la fenêtre, ${totalPaires} avec sens inverse → ${segs.length} tronçon(s) suivi(s) (+${nouveaux} nouveau(x)).`);
+
   for (const seg of segs) {
     const hist = loadHistory(seg.from, seg.to);
     hist.segment = { from: seg.from, to: seg.to };
@@ -170,23 +204,30 @@ async function main() {
     hist.updated = new Date(ts).toISOString();
     const file = join(ROOT, 'data', 'history', slugOf(seg.from, seg.to) + '.json');
     mkdirSync(dirname(file), { recursive: true });
-    // JSON compact : ~2 700 fichiers × 180 jours — l'indentation coûterait trop cher
+    // JSON compact : des milliers de fichiers × 180 jours — l'indentation coûterait trop cher
     writeFileSync(file, JSON.stringify(hist) + '\n');
-    const total = Object.values(perDate).reduce((a, b) => a + b, 0);
-    summary.push(`  • ${seg.from} → ${seg.to} : ${total} trains directs sur la fenêtre (jour J : ${perDate[today]})`);
+    const tot = Object.values(perDate).reduce((a, b) => a + b, 0);
+    summary.push(`  • ${seg.from} → ${seg.to} : ${tot} trains directs sur la fenêtre (jour J : ${perDate[today]})`);
   }
 
-  const metaFile = join(ROOT, 'data', 'history', '_meta.json');
-  writeFileSync(metaFile, JSON.stringify({
+  /* _meta.json compact : source de vérité des tronçons pour le site et le robot */
+  writeFileSync(metaPath, JSON.stringify({
     lastRun: new Date(ts).toISOString(),
     windowDays: WINDOW_DAYS,
+    discovery: true,
     segments: segs.map(s => ({ from: s.from, to: s.to }))
-  }, null, 1) + '\n');
+  }) + '\n');
+
+  /* watched.json resynchronisé : lisible par l'humain, repris par gen-watched.mjs
+     et par le bouton « Préparer watched.json » comme base existante. */
+  writeFileSync(watchedPath, JSON.stringify(segs.map(s => ({ from: s.from, to: s.to })), null, 1) + '\n');
 
   console.log('Résumé :');
   for (const l of summary.slice(0, 12)) console.log(l);
   if (summary.length > 12) console.log(`  … et ${summary.length - 12} autre(s) tronçon(s).`);
-  console.log('OK — data/history/ à jour.');
+  console.log(`OK — data/history/ à jour (${segs.length} tronçons, dont ${nouveaux} découvert(s) ce jour).`);
 }
 
-main().catch(e => { console.error('ÉCHEC :', e.message); process.exit(1); });
+/* --- exécution directe uniquement (l'import des fonctions pures ne lance rien) --- */
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) main().catch(e => { console.error('ÉCHEC :', e.message); process.exit(1); });
