@@ -1,16 +1,24 @@
 name: Snapshot quotidien TGVmax
 
-# Chaque nuit : relève la fenêtre complète de réservation (31 jours) pour
-# chaque tronçon de data/watched.json, et versionne le résultat dans
-# data/history/. GitHub Pages republie automatiquement, le site lit ces
-# fichiers pour tracer l'évolution des disponibilités.
+# Le relevé ne doit s'exécuter qu'UNE fois par jour (UTC). Le planificateur
+# « cron » de GitHub Actions est capricieux : retards de plusieurs heures ou
+# créneaux purement sautés (observé les 12, 13 et 14 septembre 2026).
+# Stratégie watchdog : un créneau TOUTES LES 30 MINUTES + un garde-fou.
+# Chaque exécution sautée coûte ~20 s et les dépôts publics ont des Actions
+# illimitées. Un relevé part seulement si :
+#   - il est 05:00 UTC ou plus (dataset nocturne rafraîchi), ET
+#   - aucun relevé du jour n'existe déjà (_meta.json → lastRun), ET
+#   - l'API SNCF répond (jusqu'à 3 tentatives).
+# Déclencheurs additionnels : push sur main (rattrapage gratuit — le commit du
+# robot lui-même ne re-déclenche rien, GITHUB_TOKEN ne s'auto-déclenche pas)
+# et bouton manuel « Run workflow ».
 
 on:
   schedule:
-    - cron: '45 4 * * *'   # 04:45 UTC = 06:45 à Paris, après la mise à jour nocturne du dataset
-    - cron: '45 7 * * *'   # secours : 07:45 UTC = 09:45 à Paris (le planificateur GitHub
-                           # retarde parfois de plusieurs heures, voire saute un créneau)
-  workflow_dispatch: {}     # déclenchement manuel possible
+    - cron: '*/30 * * * *'   # watchdog : 48 chances par jour de capturer le relevé
+  push:
+    branches: [main]         # tout push sur main rattrape le relevé s'il manque
+  workflow_dispatch: {}      # déclenchement manuel possible
 
 permissions:
   contents: write
@@ -30,17 +38,31 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Déjà relevé aujourd'hui ?
+      - name: Garde-fou — faut-il un relevé ?
         run: |
           TODAY=$(date -u +%F)
-          if node -e "const m=require('./data/history/_meta.json');process.exit((m.lastRun||'').startsWith(process.argv[1])?0:1)" "$TODAY"; then
-            echo "Un relevé du $TODAY est déjà enregistré — exécution sautée."
-            echo "SKIP=true" >> "$GITHUB_ENV"
+          HOUR=$((10#$(date -u +%H)))
+          SKIP=""
+          if [ "$HOUR" -lt 5 ]; then
+            echo "Avant 05:00 UTC — dataset nocturne pas encore rafraîchi, on attend."
+            SKIP=true
+          elif node -e "const m=require('./data/history/_meta.json');process.exit((m.lastRun||'').startsWith(process.argv[1])?0:1)" "$TODAY"; then
+            echo "Relevé du $TODAY déjà enregistré — exécution sautée."
+            SKIP=true
+          else
+            echo "Relevé du $TODAY absent — lancement du relevé."
           fi
+          if [ -n "$SKIP" ]; then echo "SKIP=true" >> "$GITHUB_ENV"; fi
 
-      - name: Relevé des disponibilités
+      - name: Relevé des disponibilités (3 tentatives)
         if: env.SKIP != 'true'
-        run: node scripts/daily-snapshot.mjs
+        run: |
+          for i in 1 2 3; do
+            if node scripts/daily-snapshot.mjs; then exit 0; fi
+            echo "Tentative $i échouée — nouvel essai dans 30 s…"
+            sleep 30
+          done
+          exit 1
 
       - name: Commit & push des données
         if: env.SKIP != 'true'

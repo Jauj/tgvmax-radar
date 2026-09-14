@@ -1954,7 +1954,7 @@ if (typeof document !== 'undefined') {
     const n = (REMOTE_META.segments || []).length;
     el.innerHTML = REMOTE_META.lastRun
       ? `🤖 <strong>Snapshot automatique actif</strong> — dernier relevé ${escapeHtml(new Date(REMOTE_META.lastRun).toLocaleString('fr-FR', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }))}, ${n} tronçon(s) dans <code>data/watched.json</code>.`
-      : '🤖 Snapshot automatique : <strong>pas encore actif</strong> — « Préparer watched.json » ci-dessous l\u2019active en 1 minute (un relevé chaque nuit à 6 h 45).';
+      : '🤖 Snapshot automatique : <strong>pas encore actif</strong> — « Préparer watched.json » ci-dessous l\u2019active en 1 minute (un relevé chaque matin, robot garanti par watchdog).';
   }
 
   async function buildWatchedJson() {
