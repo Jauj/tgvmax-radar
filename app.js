@@ -213,6 +213,69 @@ function histSeries(days) {
     }))
     .sort((a, b) => (a.day < b.day ? -1 : 1));
 }
+/** Lundi = 0 … dimanche = 6 */
+function dowOf(iso) { return (new Date(iso + 'T00:00:00Z').getUTCDay() + 6) % 7; }
+/** Remises en vente d'un tronçon : compare chaque relevé au précédent, date de voyage par
+ *  date de voyage. Hausse = place revenue / train ajouté. Une date qui entre dans la fenêtre
+ *  compte comme « ouverture ». Paires espacées de plus de 3 j ignorées (relevés manqués).
+ *  Même logique que scripts/gen-stats.mjs (openingStats). */
+function openingStats(days) {
+  const LEADS = 31, MAX_GAP = 3;
+  const keys = Object.keys(days || {}).sort();
+  const st = {
+    snaps: keys.length, pairs: 0, obs: 0, events: 0, gains: 0, losses: 0,
+    opens: 0, openTrains: 0,
+    byLead: new Array(LEADS).fill(0), evLead: new Array(LEADS).fill(0), obsLead: new Array(LEADS).fill(0),
+    bySnapDow: new Array(7).fill(0), pairsSnapDow: new Array(7).fill(0),
+    byTravelDow: new Array(7).fill(0),
+    timeline: {}
+  };
+  for (let i = 1; i < keys.length; i++) {
+    const p = keys[i - 1], d = keys[i];
+    const gap = dayDiff(p, d);
+    if (gap < 1 || gap > MAX_GAP) continue;
+    const prev = days[p].perDate || {}, cur = days[d].perDate || {};
+    const prevMax = Object.keys(prev).sort().pop() || p;
+    st.pairs++;
+    st.pairsSnapDow[dowOf(d)]++;
+    let dayGain = 0;
+    for (const [t, nRaw] of Object.entries(cur)) {
+      if (t < d) continue;
+      const n = Number(nRaw) || 0;
+      const lead = dayDiff(d, t);
+      if (!(t in prev)) {
+        if (t > prevMax) { st.opens++; st.openTrains += n; continue; }
+      }
+      const delta = n - (Number(prev[t]) || 0);
+      st.obs++;
+      if (lead < LEADS) st.obsLead[lead]++;
+      if (delta > 0) {
+        st.events++; st.gains += delta; dayGain += delta;
+        if (lead < LEADS) { st.byLead[lead] += delta; st.evLead[lead]++; }
+        st.bySnapDow[dowOf(d)] += delta;
+        st.byTravelDow[dowOf(t)] += delta;
+      } else if (delta < 0) st.losses -= delta;
+    }
+    st.timeline[d] = dayGain;
+  }
+  return st;
+}
+/** Additionne des openingStats (agrégat de plusieurs tronçons) */
+function openingStatsSum(list) {
+  const acc = openingStats({});
+  for (const st of list) {
+    for (const k of ['snaps', 'pairs', 'obs', 'events', 'gains', 'losses', 'opens', 'openTrains']) acc[k] += st[k] || 0;
+    for (const k of ['byLead', 'evLead', 'obsLead', 'bySnapDow', 'pairsSnapDow', 'byTravelDow']) (st[k] || []).forEach((v, i) => { acc[k][i] += v; });
+    for (const [d, v] of Object.entries(st.timeline || {})) acc.timeline[d] = (acc.timeline[d] || 0) + v;
+  }
+  return acc;
+}
+/** Indice du maximum d'un tableau (-1 si tout est nul) */
+function argMax(arr) {
+  let best = -1, m = 0;
+  (arr || []).forEach((v, i) => { if (v > m) { m = v; best = i; } });
+  return best;
+}
 /** Classe de couleur heatmap selon le nombre de places */
 function hmClass(n) {
   if (n == null || n === '') return 'hm-x';
@@ -1676,8 +1739,178 @@ if (typeof document !== 'undefined') {
     el.innerHTML = html;
   }
 
+  /* ---------- Vue ouvertures : quand les trains « tombent » ---------- */
+  const DOW_SHORT = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+  const DOW_FULL = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+  let STATS = null; // data/stats.json (classement de tous les tronçons, calculé par le robot)
+  async function loadStats() {
+    if (STATS) return STATS;
+    try {
+      const r = await fetch('data/stats.json?_=' + Math.floor(Date.now() / 600000), { headers: { Accept: 'application/json' } });
+      if (r.ok) STATS = await r.json();
+    } catch (e) {}
+    return STATS;
+  }
+
+  /** Histogramme SVG : bars = [{ label, v, title, hi }] ; hi = barre mise en avant */
+  function svgBarsChart(bars, opts = {}) {
+    if (!bars.length) return '';
+    const W = opts.width || 680, H = opts.height || 210, PL = 40, PR = 10, PT = 14, PB = 26;
+    const yMax = niceMax(Math.max(1, ...bars.map(b => Number(b.v) || 0)));
+    const slot = (W - PL - PR) / bars.length;
+    const bw = Math.max(2, slot * 0.72);
+    const Y = v => H - PB - (v / yMax) * (H - PT - PB);
+    let grid = '';
+    for (let i = 0; i <= 4; i++) {
+      const v = yMax * i / 4, y = Y(v).toFixed(1);
+      const lbl = opts.fmt ? opts.fmt(v) : Math.round(v);
+      grid += `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`
+        + `<text x="${PL - 6}" y="${Number(y) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${lbl}</text>`;
+    }
+    const every = Math.ceil(bars.length / 16);
+    const rects = bars.map((b, i) => {
+      const v = Number(b.v) || 0;
+      const x = PL + i * slot + (slot - bw) / 2, y = Y(v);
+      const cx = (x + bw / 2).toFixed(1);
+      // pics : étiquette au-dessus de la barre (évite de chevaucher l'axe) ; axe : 1 étiquette sur `every`
+      const lab = (i % every === 0 ? `<text x="${cx}" y="${H - 9}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${escapeHtml(b.label)}</text>` : '')
+        + (b.hi && bars.length > 7 ? `<text x="${cx}" y="${Math.max(PT + 2, y - 5).toFixed(1)}" font-size="11" font-weight="700" text-anchor="middle" fill="var(--accent)">${escapeHtml(b.label)}</text>` : '');
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, H - PB - y).toFixed(1)}" rx="2" fill="${b.hi ? 'var(--accent)' : (opts.color || 'var(--info)')}" opacity="${b.hi ? 1 : .78}"><title>${escapeHtml(b.title || (b.label + ' : ' + v))}</title></rect>${lab}`;
+    }).join('');
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeHtml(opts.aria || 'Histogramme')}" style="width:100%;height:auto;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm)">${grid}${rects}</svg>`;
+  }
+
+  /** Les 3 indices les plus hauts (pour mettre en avant les pics) */
+  function topIdx(arr, n) {
+    return new Set(arr.map((v, i) => [v, i]).filter(x => x[0] > 0).sort((a, b) => b[0] - a[0]).slice(0, n).map(x => x[1]));
+  }
+
+  function renderOpeningsCharts(st, title) {
+    if (!st || !st.pairs) {
+      return `<div class="setup-box"><h2>📊 Pas encore assez de relevés</h2><p>Il faut au moins deux relevés consécutifs pour repérer des trains qui « tombent ». Le robot relève chaque matin : reviens demain.</p></div>`;
+    }
+    const fmtN = n => Math.round(n).toLocaleString('fr-FR');
+    const pct = (a, b) => (b ? (100 * a / b).toFixed(1).replace('.', ',') + ' %' : '–');
+    // 1) délai avant départ — on affiche J-30 → J-0 (de gauche à droite = on se rapproche du départ)
+    const leadTop = topIdx(st.byLead, 3);
+    const leadBars = [];
+    for (let x = st.byLead.length - 1; x >= 0; x--) {
+      leadBars.push({
+        label: 'J-' + x, v: st.byLead[x], hi: leadTop.has(x),
+        title: `J-${x} : ${fmtN(st.byLead[x])} train(s) remis en vente · ${pct(st.evLead[x], st.obsLead[x])} des dates de voyage ont gagné au moins un train ce jour-là`
+      });
+    }
+    // 2) jour du relevé (normalisé par nb de relevés de ce jour : les jours manqués ne biaisent pas)
+    const perSnap = st.bySnapDow.map((g, i) => (st.pairsSnapDow[i] ? g / st.pairsSnapDow[i] : 0));
+    const snapTop = topIdx(perSnap, 2);
+    const snapBars = perSnap.map((v, i) => ({
+      label: DOW_SHORT[i], v, hi: snapTop.has(i),
+      title: `Relevé du ${DOW_FULL[i]} matin : ${v.toFixed(1).replace('.', ',')} train(s) remis en vente en moyenne depuis la veille (${st.pairsSnapDow[i]} relevé(s))`
+    }));
+    // 3) jour de la semaine du voyage
+    const travTop = topIdx(st.byTravelDow, 2);
+    const travBars = st.byTravelDow.map((v, i) => ({
+      label: DOW_SHORT[i], v, hi: travTop.has(i),
+      title: `Voyages du ${DOW_FULL[i]} : ${fmtN(v)} train(s) remis en vente`
+    }));
+    // 4) chronologie
+    const tl = Object.entries(st.timeline).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    const tlTop = topIdx(tl.map(x => x[1]), 3);
+    const tlBars = tl.map(([d, v], i) => ({
+      label: d.slice(8, 10) + '/' + d.slice(5, 7), v, hi: tlTop.has(i),
+      title: `Relevé du ${fmtDayFull.format(new Date(d + 'T00:00:00'))} : ${fmtN(v)} train(s) remis en vente depuis le relevé précédent`
+    }));
+    const bestLead = argMax(st.byLead);
+    const bestSnap = argMax(perSnap);
+    const bestTrav = argMax(st.byTravelDow);
+    const pills = [
+      `<span class="stat-pill">🎟 <b>${fmtN(st.gains)}</b> trains remis en vente</span>`,
+      `<span class="stat-pill">⬆️ <b>${fmtN(st.events)}</b> hausses sur ${fmtN(st.obs)} observations (${pct(st.events, st.obs)})</span>`,
+      `<span class="stat-pill">📅 <b>${(st.gains / st.pairs).toFixed(1).replace('.', ',')}</b> / relevé en moyenne</span>`,
+      bestLead >= 0 ? `<span class="stat-pill">⏱ pic : <b>J-${bestLead}</b></span>` : '',
+      bestSnap >= 0 ? `<span class="stat-pill">🌅 meilleur relevé : <b>${DOW_FULL[bestSnap]}</b></span>` : '',
+      bestTrav >= 0 ? `<span class="stat-pill">🧳 voyages les + servis : <b>${DOW_FULL[bestTrav]}</b></span>` : ''
+    ].join('');
+    return `
+      <h3 class="op-title">${escapeHtml(title)}</h3>
+      <div class="hist-stats op-pills">${pills}</div>
+      <div class="op-grid">
+        <div class="op-card op-wide"><h4>⏱ Quand avant le départ ? <span>trains remis en vente selon le délai (J-30 → J-0)</span></h4>
+          ${svgBarsChart(leadBars, { aria: 'Remises selon le délai avant départ' })}</div>
+        <div class="op-card"><h4>🌅 Quel jour les voir ? <span>moyenne par relevé du matin (= depuis la veille)</span></h4>
+          ${svgBarsChart(snapBars, { color: 'var(--ok)', width: 360, height: 200, fmt: v => (v && v < 10 ? v.toFixed(1).replace('.', ',') : String(Math.round(v))), aria: 'Remises par jour de relevé' })}</div>
+        <div class="op-card"><h4>🧳 Pour quels voyages ? <span>par jour de la semaine du départ</span></h4>
+          ${svgBarsChart(travBars, { color: '#7c3aed', width: 360, height: 200, aria: 'Remises par jour du voyage' })}</div>
+        <div class="op-card op-wide"><h4>🗓 Au fil des relevés <span>trains remis en vente à chaque relevé quotidien</span></h4>
+          ${svgBarsChart(tlBars, { color: '#d97706', height: 180, aria: 'Remises par relevé' })}</div>
+      </div>`;
+  }
+
+  function renderRanking(stats) {
+    if (!stats || !Array.isArray(stats.segs)) return '<p class="hint">Classement indisponible (data/stats.json pas encore généré).</p>';
+    const f = norm(histState.filter || '');
+    const sortKey = histState.rankSort || 'g';
+    const val = r => (sortKey === 'rate' ? (r.o ? r.e / r.o : 0) : sortKey === 'pr' ? r.g / (r.p || 1) : r.g);
+    const rows = stats.segs
+      .map(r => ({ r, label: prettyStation(r.f) + ' → ' + prettyStation(r.t) }))
+      .filter(x => !f || norm(x.label).includes(f) || norm(x.r.f + ' ' + x.r.t).includes(f))
+      .sort((a, b) => val(b.r) - val(a.r));
+    const shown = rows.slice(0, 40);
+    // jour du relevé : ramené au nb de relevés de chaque jour (jours manqués) via l'agrégat réseau
+    const np = (stats.network && stats.network.pairsSnapDow) || [];
+    const perSnapDow = bs => (bs || []).map((g, i) => (np[i] ? g / np[i] : g));
+    const th = (k, lbl, tip) => `<th class="rk-sort${sortKey === k ? ' active' : ''}" data-rksort="${k}" title="${tip}">${lbl}${sortKey === k ? ' ▾' : ''}</th>`;
+    const body = shown.map((x, i) => {
+      const r = x.r;
+      const lead = argMax(r.bl), sd = argMax(perSnapDow(r.bs)), td = argMax(r.bt);
+      const key = segKeyOf(r.f, r.t);
+      return `<tr class="rk-row${histState.sel.includes(key) ? ' active' : ''}" data-rkseg="${escapeHtml(key)}" data-from="${escapeHtml(r.f)}" data-to="${escapeHtml(r.t)}" title="Voir les statistiques de ce trajet">
+        <td>${i + 1}</td><td class="rk-name">${escapeHtml(x.label)}</td>
+        <td class="sum">${r.g.toLocaleString('fr-FR')}</td>
+        <td>${(r.g / (r.p || 1)).toFixed(1).replace('.', ',')}</td>
+        <td>${r.o ? (100 * r.e / r.o).toFixed(1).replace('.', ',') + ' %' : '–'}</td>
+        <td>${lead >= 0 ? 'J-' + lead : '–'}</td>
+        <td>${sd >= 0 ? DOW_SHORT[sd] : '–'}</td>
+        <td>${td >= 0 ? DOW_SHORT[td] : '–'}</td></tr>`;
+    }).join('');
+    return `
+      <h3 class="op-title">🏆 Classement des trajets <span class="hint">— ${rows.length.toLocaleString('fr-FR')} trajet(s)${f ? ' filtrés' : ''} · relevés du ${escapeHtml(fmtDayShort.format(new Date(stats.first + 'T00:00:00')))} au ${escapeHtml(fmtDayShort.format(new Date(stats.last + 'T00:00:00')))} · clic = détail</span></h3>
+      <div class="tbl-scroll"><table class="hist-table rk-table"><thead><tr>
+        <th>#</th><th class="rk-name">Trajet</th>
+        ${th('g', 'Trains remis', 'Total des trains remis en vente sur toute la période')}
+        ${th('pr', '/ relevé', 'Trains remis en vente par relevé quotidien')}
+        ${th('rate', 'Fréquence', 'Part des dates de voyage qui gagnent au moins un train d’un relevé à l’autre')}
+        <th title="Délai avant départ où il tombe le plus de trains">Pic</th>
+        <th title="Jour du relevé (matin) où il en tombe le plus">Relevé</th>
+        <th title="Jour de voyage le plus servi">Voyage</th>
+      </tr></thead><tbody>${body || '<tr><td colspan="8">Aucun trajet ne correspond au filtre.</td></tr>'}</tbody></table></div>
+      ${rows.length > shown.length ? `<p class="hint">… ${rows.length - shown.length} autres — affine avec le filtre 🔎 ci-dessus.</p>` : ''}`;
+  }
+
+  async function renderOpenings(el, segsDays) {
+    const note = document.getElementById('hist-note');
+    const stats = await loadStats();
+    const scope = histState.scope || 'sel';
+    let st, title;
+    if (scope === 'net') {
+      st = stats && stats.network;
+      title = '🌐 Réseau entier — tous les tronçons relevés';
+    } else {
+      st = openingStatsSum(segsDays.map(s => openingStats(s.days)));
+      title = segsDays.length === 1
+        ? prettyStation(segsDays[0].from) + ' → ' + prettyStation(segsDays[0].to)
+        : `Sélection : ${segsDays.length} tronçons additionnés`;
+    }
+    const toggle = `<div class="hist-views op-scope" role="group" aria-label="Périmètre">
+      <button type="button" class="hist-viewbtn${scope === 'sel' ? ' active' : ''}" data-opscope="sel">🎯 Trajet(s) sélectionné(s)</button>
+      <button type="button" class="hist-viewbtn${scope === 'net' ? ' active' : ''}" data-opscope="net">🌐 Réseau entier</button></div>`;
+    el.innerHTML = toggle + renderOpeningsCharts(st, title) + renderRanking(stats);
+    if (note) note.textContent = 'Une « remise en vente » = le nombre de trains directs dispo pour une date de voyage augmente d’un relevé quotidien au suivant (places rendues, trains ajoutés). Le dataset SNCF n’est rafraîchi qu’une fois par nuit : on mesure le jour, pas l’heure. Survole les barres pour le détail. '
+      + (scope === 'net' ? 'Le réseau entier couvre toute la période (le sélecteur 30 j / 90 j ne s’y applique pas).' : '');
+  }
+
   /* ---------- État de la vue + rendu d'ensemble ---------- */
-  const histState = { sel: [], view: 'curves', range: '30', activeDates: new Set(), filter: '' };
+  const histState = { sel: [], view: 'curves', range: '30', activeDates: new Set(), filter: '', scope: 'sel', rankSort: 'g' };
   const SEG_CHIP_CAP = 300;   // puces rendues avant d'exiger le filtre
   let chipsKey = null;        // signature du dernier rendu des puces
 
@@ -1814,9 +2047,11 @@ if (typeof document !== 'undefined') {
     if (note) note.textContent = 'Chaque courbe = une date de voyage ; les bosses = des places revenues à la vente. Coche d\u2019autres dates pour superposer.';
   }
 
+  let histRenderTok = 0; // rendus asynchrones concurrents : seul le plus récent écrit le DOM
   async function renderHistUI() {
     const viz = document.getElementById('hist-viz');
     if (!viz) return;
+    const tok = ++histRenderTok;
     const segs = allKnownSegments();
     if (!histState.sel.length) {
       const first = segs.keys().next();
@@ -1840,6 +2075,9 @@ if (typeof document !== 'undefined') {
       }
       segsDays.push({ from: s.from, to: s.to, days });
     }
+    if (tok !== histRenderTok) return;
+    if (histState.view === 'open') await loadStats();
+    if (tok !== histRenderTok) return;
     renderStats(segsDays);
     if (histState.view === 'heat') {
       document.getElementById('hist-multidate').hidden = true;
@@ -1848,6 +2086,9 @@ if (typeof document !== 'undefined') {
         viz.innerHTML = '<p class="hint">🗓 La vue calendrier s\u2019applique à un seul tronçon — décoche pour n\u2019en garder qu\u2019un, ou compare en vue 📈 Courbes.</p>';
         document.getElementById('hist-note').textContent = '';
       }
+    } else if (histState.view === 'open') {
+      document.getElementById('hist-multidate').hidden = true;
+      await renderOpenings(viz, segsDays);
     } else if (histState.view === 'data') {
       document.getElementById('hist-multidate').hidden = true;
       renderDataTable(viz, segsDays);
@@ -1880,7 +2121,7 @@ if (typeof document !== 'undefined') {
   document.getElementById('hist-filter').addEventListener('input', ev => {
     histState.filter = ev.target.value;
     clearTimeout(histFilterTimer);
-    histFilterTimer = setTimeout(renderSegChips, 120);
+    histFilterTimer = setTimeout(() => { renderSegChips(); if (histState.view === 'open') renderHistUI(); }, 120);
   });
   document.getElementById('hist-range').addEventListener('change', ev => {
     histState.range = ev.target.value;
@@ -1891,6 +2132,19 @@ if (typeof document !== 'undefined') {
     document.querySelectorAll('.hist-viewbtn').forEach(x => x.classList.toggle('active', x === b));
     renderHistUI();
   }));
+  document.getElementById('hist-viz').addEventListener('click', ev => {
+    const sc = ev.target.closest('[data-opscope]');
+    if (sc) { histState.scope = sc.dataset.opscope; renderHistUI(); return; }
+    const so = ev.target.closest('[data-rksort]');
+    if (so) { histState.rankSort = so.dataset.rksort; renderHistUI(); return; }
+    const row = ev.target.closest('[data-rkseg]');
+    if (row) {
+      histState.sel = [row.dataset.rkseg];
+      histState.scope = 'sel';
+      syncSegChips();
+      renderHistUI().then(() => document.getElementById('hist-viz').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    }
+  });
   document.getElementById('hist-multidate').addEventListener('click', ev => {
     const chip = ev.target.closest('[data-mdate]');
     if (!chip) return;

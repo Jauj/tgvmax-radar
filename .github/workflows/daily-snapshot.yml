@@ -64,6 +64,10 @@ jobs:
           done
           exit 1
 
+      - name: Statistiques des remises en vente (data/stats.json)
+        if: env.SKIP != 'true'
+        run: node scripts/gen-stats.mjs
+
       - name: Commit & push des données
         if: env.SKIP != 'true'
         run: |

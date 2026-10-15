@@ -13,6 +13,7 @@ Outil local & gratuit pour trouver les places **TGVmax** ouvertes à la réserva
 - 📈 **Suivi & historique des disponibilités** : chaque relevé mémorise le nombre de trains directs d'un tronçon pour **toutes les dates de voyage** de la fenêtre de réservation, et les vues retracent l'évolution jour après jour :
   - **📈 Courbes** — une courbe par date de voyage (repérer les places qui remontent) ou comparaison de plusieurs tronçons sur un même graphique ;
   - **🗓 Calendrier** — heatmap « relevés × dates de voyage » : on voit d'un coup d'œil les ouvertures (vert) et les épuisements (rouge) ;
+  - **📊 Ouvertures** — *quand* les trains tombent : chaque relevé est comparé au précédent, date de voyage par date de voyage ; toute hausse = trains remis en vente. Histogrammes par délai avant départ (J-30 → J-0), par jour du relevé, par jour du voyage et au fil des relevés — pour le(s) trajet(s) sélectionné(s) ou le réseau entier — plus un **classement de tous les trajets** (trains remis, fréquence, pic J-x), triable et filtrable. Calculé chaque matin par [`scripts/gen-stats.mjs`](scripts/gen-stats.mjs) → `data/stats.json`.
   - **📋 Données** — tableau croisé, export CSV-ready (JSON), import, purge.
   - Fonctionne **sans aucun compte** : historique local (localStorage) + fusion automatique des relevés du dépôt. La sauvegarde Supabase reste optionnelle.
 - 🤖 **Snapshot quotidien automatique** : une GitHub Action ([`.github/workflows/daily-snapshot.yml`](.github/workflows/daily-snapshot.yml)) relève chaque matin (déclencheur « watchdog » toutes les 30 min + garde-fou anti-doublon — le créneau exact dépend du planificateur GitHub, en général entre 7 h et 9 h 45 heure de Paris) la fenêtre glissante du mois suivant (J → J+30) pour **tous les tronçons découverts automatiquement** dans le dataset — chaque nouvelle liaison qui apparaît à l'ouverture des dates est capturée le jour même, dans les deux sens — et versionne le résultat dans `data/history/` — consultable par tous, même sans visiter le site.
@@ -66,6 +67,8 @@ gh api repos/{owner}/{repo}/pages -X POST -f "source[branch]=main" -f "source[pa
 | `style.css` | Habillage (thème clair/sombre, heatmap, graphiques) |
 | `data/watched.json` | Tronçons relevés automatiquement chaque nuit |
 | `data/history/*.json` | Historique des relevés (un fichier par tronçon) |
+| `data/stats.json` | Statistiques des remises en vente (tous tronçons + réseau), régénérées chaque matin |
+| `scripts/gen-stats.mjs` | Calcul de `data/stats.json` (aussi lançable à la main : `node scripts/gen-stats.mjs`) |
 | `scripts/daily-snapshot.mjs` | Robot du snapshot quotidien (GitHub Actions) |
 | `.github/workflows/daily-snapshot.yml` | Planification du relevé nocturne |
 | `supabase-config.js` / `supabase-setup.sql` | Sauvegarde en ligne **optionnelle** des instantanés |

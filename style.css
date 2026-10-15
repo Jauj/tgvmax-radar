@@ -803,3 +803,28 @@ footer code { background: var(--card); border: 1px solid var(--border); border-r
   .hist-table th, .hist-table td { font-size: 10px; padding: 3px 5px; }
   .hist-actions .hist-mini-btn { flex: 1 1 auto; text-align: center; }
 }
+
+/* ---------- Vue 📊 Ouvertures (remises en vente) ---------- */
+.op-scope { display: inline-flex; margin-bottom: 10px; }
+.op-title { font-size: 1rem; margin: 14px 0 6px; }
+.op-title .hint { font-weight: 400; font-size: .8rem; }
+.op-pills { margin: 0 0 10px; }
+.op-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.op-card { min-width: 0; }
+.op-card.op-wide { grid-column: 1 / -1; }
+.op-card h4 { font-size: .86rem; margin: 0 0 6px; }
+.op-card h4 span { font-weight: 400; color: var(--muted); font-size: .76rem; }
+.rk-table { min-width: 0; }
+.rk-table th.rk-name, .rk-table td.rk-name { text-align: left; white-space: normal; min-width: 180px; }
+.rk-table th.rk-sort { cursor: pointer; user-select: none; }
+.rk-table th.rk-sort.active { color: var(--accent); }
+.rk-table tr.rk-row { cursor: pointer; }
+.rk-table tr.rk-row:hover td { background: var(--accent-soft); }
+.rk-table tr.rk-row.active td { background: var(--accent-soft); font-weight: 700; }
+@media (max-width: 640px) {
+  .op-grid { grid-template-columns: 1fr; }
+  .op-scope { display: flex; }
+  .hist-controls .hist-views { flex-wrap: wrap; }
+  .hist-controls .hist-viewbtn { flex: 1 1 40%; }
+  .rk-table th.rk-name, .rk-table td.rk-name { min-width: 130px; }
+}
